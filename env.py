@@ -10,6 +10,8 @@ class GridEnvironment(gym.Env):
     while avoiding walls. The environment can be initialized from a string-based map
     or as a randomly generated grid.
 
+    This version supports 8 actions (including diagonals) and provides a 3x3 local view.
+
     Attributes:
         grid_size (int): The size of the square grid.
         agent_pos (np.ndarray): The current (row, col) coordinates of the agent.
@@ -37,7 +39,6 @@ class GridEnvironment(gym.Env):
 
         self.grid_map = grid_map
         if self.grid_map:
-            # Ensure the map is square
             assert all(len(row) == len(self.grid_map) for row in self.grid_map), "Grid map must be square."
             self.grid_size = len(self.grid_map)
         else:
@@ -48,14 +49,15 @@ class GridEnvironment(gym.Env):
 
         # Define spaces
         # 0: Up, 1: Down, 2: Left, 3: Right
-        self.action_space = gym.spaces.Discrete(4)
+        # 4: Up-Left, 5: Up-Right, 6: Down-Left, 7: Down-Right
+        self.action_space = gym.spaces.Discrete(8)
 
         # The observation space is a dictionary containing:
-        # 1. 'local_view': A 5x5 area around the agent.
+        # 1. 'local_view': A 3x3 area around the agent.
         # 2. 'agent_pos': The agent's own coordinates.
         # 3. 'target_pos': The target's coordinates.
         self.observation_space = gym.spaces.Dict({
-            'local_view': gym.spaces.Box(low=0, high=4, shape=(5, 5), dtype=np.int32),
+            'local_view': gym.spaces.Box(low=0, high=4, shape=(3, 3), dtype=np.int32),
             'agent_pos': gym.spaces.Box(low=0, high=self.grid_size - 1, shape=(2,), dtype=np.int32),
             'target_pos': gym.spaces.Box(low=0, high=self.grid_size - 1, shape=(2,), dtype=np.int32)
         })
@@ -64,7 +66,7 @@ class GridEnvironment(gym.Env):
         self.agent_pos = None
         self.target_pos = None
         self.walls = []
-        self._max_steps = self.grid_size * self.grid_size # Set a limit for steps per episode
+        self._max_steps = self.grid_size * self.grid_size 
         self._current_step = 0
 
         # Grid cell values for representation
@@ -77,28 +79,25 @@ class GridEnvironment(gym.Env):
         """Generates the grid from the predefined string map."""
         self.grid = np.full((self.grid_size, self.grid_size), self._empty_cell)
         self.walls = []
-        agent_found = False
-        target_found = False
+        agent_found, target_found = False, False
 
         for r, row_str in enumerate(self.grid_map):
             for c, char in enumerate(row_str):
                 pos = (r, c)
-                if char == '#':  # Wall
+                if char == '#':
                     self.walls.append(pos)
                     self.grid[pos] = self._wall_cell
-                elif char == 'A':  # Agent
+                elif char == 'A':
                     self.agent_pos = pos
                     self.grid[pos] = self._agent_cell
                     agent_found = True
-                elif char == 'T':  # Target
+                elif char == 'T':
                     self.target_pos = pos
                     self.grid[pos] = self._target_cell
                     target_found = True
         
-        if not agent_found:
-            raise ValueError("Grid map must contain an 'A' to specify the agent's start position.")
-        if not target_found:
-            raise ValueError("Grid map must contain a 'T' to specify the target's position.")
+        if not agent_found: raise ValueError("Grid map must contain 'A' for agent start.")
+        if not target_found: raise ValueError("Grid map must contain 'T' for target.")
 
     def _generate_random_grid(self):
         """Generates a new grid with random walls, agent, and target positions."""
@@ -125,11 +124,11 @@ class GridEnvironment(gym.Env):
                 return pos
 
     def _get_observation(self) -> dict:
-        """Gets the current observation for the agent."""
-        padded_grid = np.pad(self.grid, pad_width=2, mode='constant', constant_values=self._wall_cell)
-        padded_agent_pos = np.array(self.agent_pos) + 2
+        """Gets the current 3x3 observation for the agent."""
+        padded_grid = np.pad(self.grid, pad_width=1, mode='constant', constant_values=self._wall_cell)
+        padded_agent_pos = np.array(self.agent_pos) + 1
         r, c = padded_agent_pos
-        local_view = padded_grid[r-2:r+3, c-2:c+3]
+        local_view = padded_grid[r-1:r+2, c-1:c+2]
 
         return {
             'local_view': local_view.astype(np.int32),
@@ -153,18 +152,26 @@ class GridEnvironment(gym.Env):
         return observation, info
 
     def step(self, action: int) -> tuple[dict, float, bool, bool, dict]:
-        """Executes one time step within the environment."""
+        """Executes one time step within the environment with 8 possible actions."""
         old_pos = self.agent_pos
         new_pos = list(self.agent_pos)
 
-        if action == 0: new_pos[0] -= 1  # Up
-        elif action == 1: new_pos[0] += 1 # Down
-        elif action == 2: new_pos[1] -= 1 # Left
-        elif action == 3: new_pos[1] += 1 # Right
+        # 0-3 are cardinal, 4-7 are diagonal
+        moves = {
+            0: (-1, 0), 1: (1, 0), 2: (0, -1), 3: (0, 1),
+            4: (-1, -1), 5: (-1, 1), 6: (1, -1), 7: (1, 1)
+        }
+        
+        if action in moves:
+            move = moves[action]
+            new_pos[0] += move[0]
+            new_pos[1] += move[1]
 
+        # Check for collisions with walls or boundaries
         if not (0 <= new_pos[0] < self.grid_size and 0 <= new_pos[1] < self.grid_size) or tuple(new_pos) in self.walls:
             new_pos = old_pos
 
+        # Update grid state
         self.grid[old_pos] = self._empty_cell
         self.agent_pos = tuple(new_pos)
         self.grid[self.agent_pos] = self._agent_cell
@@ -183,10 +190,10 @@ class GridEnvironment(gym.Env):
 
     def render(self):
         """Renders the environment."""
-        if self.render_mode == 'ansi':
-            return self._render_to_string()
-        elif self.render_mode == 'human':
+        if self.render_mode == 'human':
             print(self._render_to_string())
+        elif self.render_mode == 'ansi':
+            return self._render_to_string()
 
     def _render_to_string(self) -> str:
         """Helper method to create a string representation of the grid."""
@@ -201,7 +208,6 @@ class GridEnvironment(gym.Env):
         }
         
         grid_str = ""
-        # Create a temporary grid for rendering to correctly show agent and target
         render_grid = np.copy(self.grid)
         render_grid[self.agent_pos] = self._agent_cell
         render_grid[self.target_pos] = self._target_cell
@@ -212,46 +218,35 @@ class GridEnvironment(gym.Env):
             grid_str += "\n"
         
         grid_str += f"Step: {self._current_step}\n"
-        grid_str += f"Agent Position: {self.agent_pos}\n"
-        grid_str += f"Target Position: {self.target_pos}\n"
         return grid_str
 
     def close(self):
-        """Performs any necessary cleanup."""
         pass
 
 # Example of how to use the environment
 if __name__ == '__main__':
-    # --- Example 1: Using a predefined map ---
-    print("--- Running example with a custom map ---")
     custom_map = [
         "##########",
         "#A       #",
         "# ###### #",
         "#        #",
         "#   #    #",
-        "#   #    #",
+        "#   # T  #",
         "#   #    #",
         "#        #",
-        "#       T#",
+        "#        #",
         "##########",
     ]
-    env_from_map = GridEnvironment(grid_map=custom_map, render_mode='human')
-    obs, info = env_from_map.reset()
-    env_from_map.render()
+    env = GridEnvironment(grid_map=custom_map, render_mode='human')
+    obs, info = env.reset()
+    env.render()
     
-    for _ in range(5):
-        action = env_from_map.action_space.sample()
-        obs, reward, terminated, truncated, info = env_from_map.step(action)
+    for _ in range(10):
+        action = env.action_space.sample()
+        obs, reward, terminated, truncated, info = env.step(action)
         print(f"Action: {action}, Reward: {reward}")
-        env_from_map.render()
+        env.render()
         if terminated or truncated:
+            print("Episode finished.")
             break
-    env_from_map.close()
-
-    print("\n\n--- Running example with a randomly generated grid ---")
-    # --- Example 2: Using random generation ---
-    env_random = GridEnvironment(grid_size=10, wall_percentage=0.3, render_mode='human')
-    obs, info = env_random.reset()
-    env_random.render()
-    env_random.close()
+    env.close()

@@ -16,6 +16,38 @@ def _chebyshev_distance(pos1, pos2):
     """Calculates Chebyshev distance (for grid with diagonal moves)."""
     return max(abs(pos1[0] - pos2[0]), abs(pos1[1] - pos2[1]))
 
+def _get_char_for_prob(prob):
+    """Maps a probability (0.0 to 1.0) to a Unicode block character for a gradient effect."""
+    if prob < 0.1:
+        return ' '  # Almost certainly empty
+    elif prob < 0.3:
+        return '░'  # Low probability of wall
+    elif prob < 0.6:
+        return '▒'  # Medium probability
+    elif prob < 0.9:
+        return '▓'  # High probability
+    else:
+        return '█'  # Almost certainly a wall
+
+def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos):
+    """Renders a belief map using Unicode block characters to show a gradient."""
+    grid_str = ""
+    for r in range(grid_size):
+        for c in range(grid_size):
+            pos = (r, c)
+            if pos == tuple(agent_pos):
+                grid_str += ' A  '  # 4 characters for alignment
+            elif pos == tuple(target_pos):
+                grid_str += ' T  '  # 4 characters for alignment
+            else:
+                prob = belief_map[r, c]
+                char = _get_char_for_prob(prob)
+                # Use the character twice for a wider, more visible block
+                grid_str += f' {char}{char} '
+        grid_str += "\n"
+    print(grid_str)
+
+
 def _calculate_heuristic_utilities(agent_pos, target_pos, states, env):
     """
     Calculates the 'world utility' of each action in each state.
@@ -24,7 +56,7 @@ def _calculate_heuristic_utilities(agent_pos, target_pos, states, env):
     num_states = len(states)
     num_actions = env.action_space.n
     all_utilities = np.zeros((num_states, num_actions))
-    
+
     action_moves = {
         0: (-1, 0), 1: (1, 0), 2: (0, -1), 3: (0, 1),
         4: (-1, -1), 5: (-1, 1), 6: (1, -1), 7: (1, 1)
@@ -46,17 +78,17 @@ def _calculate_heuristic_utilities(agent_pos, target_pos, states, env):
             move = action_moves[action_idx]
             next_pos = (agent_pos[0] + move[0], agent_pos[1] + move[1])
 
-            if (next_pos in hypothetical_walls or 
+            if (next_pos in hypothetical_walls or
                 not (0 <= next_pos[0] < env.grid_size and 0 <= next_pos[1] < env.grid_size)):
                 action_utilities.append(-np.inf)
                 continue
-            
+
             next_dist_to_target = _chebyshev_distance(next_pos, target_pos)
             utility = current_dist_to_target - next_dist_to_target
             action_utilities.append(utility)
-        
+
         all_utilities[i, :] = np.array(action_utilities, dtype=float)
-    
+
     return all_utilities
 
 def _generate_possible_states(agent_pos, target_pos, belief_map, env):
@@ -65,7 +97,7 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env):
     Used by both the agent (with its internal map) and the observer (with its own map).
     """
     base_state = np.full((3, 3), env._empty_cell)
-    uncertain_cells = [] 
+    uncertain_cells = []
 
     for r_local in range(3):
         for c_local in range(3):
@@ -79,7 +111,7 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env):
                 else:
                     base_state[r_local, c_local] = env._agent_cell
                 continue
-            
+
             if global_pos == target_pos:
                 base_state[r_local, c_local] = env._target_cell
                 continue
@@ -92,9 +124,9 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env):
                     base_state[r_local, c_local] = env._wall_cell
                 elif prob_wall == 0.0:
                     base_state[r_local, c_local] = env._empty_cell
-                else: 
+                else:
                     uncertain_cells.append((r_local, c_local))
-    
+
     if not uncertain_cells:
         return [base_state]
 
@@ -113,14 +145,14 @@ class RSAAgent:
     """
     An agent that uses its private 'internal_belief_map' to decide on an action.
     """
-    def __init__(self, env: GridEnvironment, rsa_iterations: int = 3, rationality: float = 1.0, utility_beta: float = 1.5):
+    def __init__(self, env: GridEnvironment, rsa_iterations: int = 3, rationality: float = 10, utility_beta: float = 10):
         self.env = env
         self.rsa_iterations = rsa_iterations
-        self.alpha = rationality 
+        self.alpha = rationality
         self.beta = utility_beta
         self.num_actions = env.action_space.n
         self.internal_belief_map = np.full((env.grid_size, env.grid_size), 0.5)
-        
+
         if env.agent_pos is not None:
             self.internal_belief_map[env.agent_pos] = 0.0
         if env.target_pos is not None:
@@ -130,38 +162,38 @@ class RSAAgent:
         agent_pos = tuple(observation['agent_pos'])
         target_pos = tuple(observation['target_pos'])
         s_true = observation['local_view']
-        
+
         possible_states = _generate_possible_states(agent_pos, target_pos, self.internal_belief_map, self.env)
-        
+
         s_true_idx = -1
         for i, state in enumerate(possible_states):
             if np.array_equal(state, s_true):
                 s_true_idx = i
                 break
-        
+
         assert s_true_idx != -1, "True state not found in generated states."
 
         world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env)
-        
+
         # This is the agent's reasoning based on its private information
         P_S_k = self._run_rsa_reasoning(world_utilities, len(possible_states))
-        
+
         final_action_probs = P_S_k[s_true_idx, :]
         max_prob = np.max(final_action_probs)
         best_action_indices = np.where(final_action_probs == max_prob)[0]
         action = np.random.choice(best_action_indices)
-        
+
         return int(action), final_action_probs
-    
+
     def _run_rsa_reasoning(self, world_utilities, num_states):
         """Performs the RSA iterative calculation."""
         prior = np.full(num_states, 1.0 / num_states)
-        
+
         with np.errstate(divide='ignore', invalid='ignore'):
             exp_utilities = np.exp(self.beta * world_utilities)
             sum_exp_utilities = exp_utilities.sum(axis=1, keepdims=True)
             P_S0 = np.nan_to_num(exp_utilities / sum_exp_utilities)
-        
+
         P_S_k = P_S0
         for _ in range(self.rsa_iterations):
             with np.errstate(divide='ignore', invalid='ignore'):
@@ -183,7 +215,7 @@ class RSAAgent:
         """Updates the agent's private belief map with ground truth from its 3x3 view."""
         local_view = observation['local_view']
         agent_pos = observation['agent_pos']
-        
+
         for r_local in range(3):
             for c_local in range(3):
                 r_global = agent_pos[0] + r_local - 1
@@ -191,6 +223,11 @@ class RSAAgent:
                 if 0 <= r_global < self.env.grid_size and 0 <= c_global < self.env.grid_size:
                     cell_value = local_view[r_local, c_local]
                     self.internal_belief_map[r_global, c_global] = 1.0 if cell_value == self.env._wall_cell else 0.0
+
+    def render_internal_belief(self, agent_pos, target_pos):
+        """Renders the agent's internal belief map using a color gradient."""
+        _render_belief_map_with_chars(self.internal_belief_map, self.env.grid_size, agent_pos, target_pos)
+
 
 class Observer:
     """
@@ -214,16 +251,16 @@ class Observer:
         possible_states = _generate_possible_states(agent_pos, target_pos, self.observer_belief_map, self.env)
         if not possible_states:
             return
-        
+
         num_local_states = len(possible_states)
         prior = np.full(num_local_states, 1.0 / num_local_states)
 
         # 2. Simulate the agent's reasoning process to get the policy it would use.
         world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env)
-        
+
         # Re-run the same RSA reasoning the agent would have
         P_S_k = self._run_rsa_reasoning_for_observer(world_utilities, num_local_states)
-        
+
         # 3. Invert the model: Calculate the listener's belief (posterior over states).
         with np.errstate(divide='ignore', invalid='ignore'):
             L_numerator = P_S_k.T * prior
@@ -249,12 +286,12 @@ class Observer:
     def _run_rsa_reasoning_for_observer(self, world_utilities, num_states):
         """A copy of the agent's reasoning process for the observer to use in its simulation."""
         prior = np.full(num_states, 1.0 / num_states)
-        
+
         with np.errstate(divide='ignore', invalid='ignore'):
             exp_utilities = np.exp(self.agent_params['beta'] * world_utilities)
             sum_exp_utilities = exp_utilities.sum(axis=1, keepdims=True)
             P_S0 = np.nan_to_num(exp_utilities / sum_exp_utilities)
-        
+
         P_S_k = P_S0
         for _ in range(self.agent_params['rsa_iterations']):
             with np.errstate(divide='ignore', invalid='ignore'):
@@ -273,41 +310,30 @@ class Observer:
         return P_S_k
 
     def render_belief(self, agent_pos, target_pos):
-        """Renders the observer's belief map."""
-        display_map = self.observer_belief_map.copy()
-        grid_str = ""
-        for r in range(self.env.grid_size):
-            for c in range(self.env.grid_size):
-                pos = (r, c)
-                if pos == tuple(agent_pos):
-                    grid_str += ' A   '
-                elif pos == tuple(target_pos):
-                    grid_str += ' T   '
-                else:
-                    prob = display_map[r, c]
-                    grid_str += f'{prob:<4.2f} '
-            grid_str += "\n"
-        print(grid_str)
+        """Renders the observer's belief map using a color gradient."""
+        _render_belief_map_with_chars(self.observer_belief_map, self.env.grid_size, agent_pos, target_pos)
+
 
 # --- Main execution block ---
 if __name__ == '__main__':
     try:
         custom_map = [
-            "##########",
-            "#        #",
-            "#A###### #",
-            "#   ##   #",
-            "# # ## T #",
-            "# ## #   #",
-            "# ## ### #",
-            "#        #",
-            "#        #",
-            "##########",
+            "###########",
+            "#         #",
+            "#  # T    #",
+            "#  ####   #",
+            "#  #      #",
+            "#      ####",
+            "#  #      #",
+            "#  #   #  #",
+            "# #### ## #",
+            "#   A     #",
+            "###########",
         ]
-        
+
         env = GridEnvironment(grid_map=custom_map, render_mode='human')
         obs, info = env.reset()
-        
+
         agent = RSAAgent(env)
         observer = Observer(env, agent_params={
             'alpha': agent.alpha,
@@ -321,46 +347,62 @@ if __name__ == '__main__':
 
             os.system('cls' if os.name == 'nt' else 'clear')
             print(f"--- Step {step + 1} ---")
-            
+
             agent_pos = tuple(obs['agent_pos'])
             target_pos = tuple(obs['target_pos'])
 
             if agent_pos == target_pos:
-                print("Observer's Inferred Belief Map:")
-                observer.render_belief(agent_pos, target_pos)
-                print("\nActual Environment State:")
-                env.render()
                 print(f"\nTarget reached in {step} steps!")
                 break
 
             action, action_probs = agent.choose_action(obs)
-            
+
             observer.update_belief(agent_pos, target_pos, action)
-            print("Observer's Inferred Belief Map:")
-            observer.render_belief(agent_pos, target_pos)
             
+            # Display observer belief map only every 5 steps (includes step 0).
+            if step % 5 == 0:
+                print("Observer's Inferred Belief Map (Shading indicates wall probability):")
+                observer.render_belief(agent_pos, target_pos)
+            else:
+                # Add a newline to keep spacing consistent on steps where the map isn't printed
+                print()
+
             action_map = {
                 0: "Up", 1: "Down", 2: "Left", 3: "Right",
                 4: "Up-Left", 5: "Up-Right", 6: "Down-Left", 7: "Down-Right"
             }
-            print("\nAction Probabilities (Agent's Perspective):")
-            for i, prob in enumerate(action_probs): print(f"  - {action_map[i]:<10}: {prob:.4f}")
             print(f"Chosen Action: {action_map[action]}")
 
             new_obs, reward, terminated, truncated, info = env.step(action)
-            
+
             print("\nActual Environment State:")
             env.render()
             obs = new_obs
-            
-            time.sleep(1.0)
-            
+
+            time.sleep(0.5)
+
             if truncated:
                 print("\nEpisode truncated. Max steps reached.")
                 break
-        
         else:
-             print("\nEpisode truncated. Max steps reached.")
+             print("\nEpisode finished.")
+
+        # --- Final Rendering ---
+        print("\n" + "="*40)
+        print("---           EPISODE END          ---")
+        print("="*40 + "\n")
+
+        final_agent_pos = obs['agent_pos']
+        final_target_pos = obs['target_pos']
+
+        print("Observer's Final Inferred Belief Map:")
+        observer.render_belief(final_agent_pos, final_target_pos)
+
+        print("\nAgent's Final Internal Belief Map (Agent's Perspective):")
+        agent.render_internal_belief(final_agent_pos, final_target_pos)
+
+        print("\nFinal Actual Environment State:")
+        env.render()
 
         env.close()
     except Exception as e:

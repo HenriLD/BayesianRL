@@ -10,7 +10,7 @@ class GridEnvironment(gym.Env):
     while avoiding walls. The environment can be initialized from a string-based map
     or as a randomly generated grid.
 
-    This version supports 8 actions (including diagonals) and provides a 3x3 local view.
+    This version supports 8 actions (including diagonals) and provides a 5x5 local view.
 
     Attributes:
         grid_size (int): The size of the square grid.
@@ -53,11 +53,11 @@ class GridEnvironment(gym.Env):
         self.action_space = gym.spaces.Discrete(8)
 
         # The observation space is a dictionary containing:
-        # 1. 'local_view': A 3x3 area around the agent.
+        # 1. 'local_view': A 5x5 area around the agent.
         # 2. 'agent_pos': The agent's own coordinates.
         # 3. 'target_pos': The target's coordinates.
         self.observation_space = gym.spaces.Dict({
-            'local_view': gym.spaces.Box(low=0, high=4, shape=(3, 3), dtype=np.int32),
+            'local_view': gym.spaces.Box(low=0, high=4, shape=(5, 5), dtype=np.int32),
             'agent_pos': gym.spaces.Box(low=0, high=self.grid_size - 1, shape=(2,), dtype=np.int32),
             'target_pos': gym.spaces.Box(low=0, high=self.grid_size - 1, shape=(2,), dtype=np.int32)
         })
@@ -99,22 +99,6 @@ class GridEnvironment(gym.Env):
         if not agent_found: raise ValueError("Grid map must contain 'A' for agent start.")
         if not target_found: raise ValueError("Grid map must contain 'T' for target.")
 
-    def _generate_random_grid(self):
-        """Generates a new grid with random walls, agent, and target positions."""
-        self.grid = np.full((self.grid_size, self.grid_size), self._empty_cell)
-        
-        self.walls = []
-        num_walls = int(self.grid_size * self.grid_size * self.wall_percentage)
-        for _ in range(num_walls):
-            pos = tuple(np.random.randint(0, self.grid_size, size=2))
-            self.walls.append(pos)
-            self.grid[pos] = self._wall_cell
-
-        self.agent_pos = self._place_entity(exclude=self.walls)
-        self.target_pos = self._place_entity(exclude=self.walls + [self.agent_pos])
-
-        self.grid[self.agent_pos] = self._agent_cell
-        self.grid[self.target_pos] = self._target_cell
 
     def _place_entity(self, exclude: list[tuple[int, int]]) -> tuple[int, int]:
         """Places an entity on a random valid (not in the exclude list) cell."""
@@ -124,11 +108,11 @@ class GridEnvironment(gym.Env):
                 return pos
 
     def _get_observation(self) -> dict:
-        """Gets the current 3x3 observation for the agent."""
-        padded_grid = np.pad(self.grid, pad_width=1, mode='constant', constant_values=self._wall_cell)
-        padded_agent_pos = np.array(self.agent_pos) + 1
+        """Gets the current 5x5 observation for the agent."""
+        padded_grid = np.pad(self.grid, pad_width=2, mode='constant', constant_values=self._wall_cell)
+        padded_agent_pos = np.array(self.agent_pos) + 2
         r, c = padded_agent_pos
-        local_view = padded_grid[r-1:r+2, c-1:c+2]
+        local_view = padded_grid[r-2:r+3, c-2:c+3]
 
         return {
             'local_view': local_view.astype(np.int32),
@@ -223,30 +207,3 @@ class GridEnvironment(gym.Env):
     def close(self):
         pass
 
-# Example of how to use the environment
-if __name__ == '__main__':
-    custom_map = [
-        "##########",
-        "#A       #",
-        "# ###### #",
-        "#        #",
-        "#   #    #",
-        "#   # T  #",
-        "#   #    #",
-        "#        #",
-        "#        #",
-        "##########",
-    ]
-    env = GridEnvironment(grid_map=custom_map, render_mode='human')
-    obs, info = env.reset()
-    env.render()
-    
-    for _ in range(10):
-        action = env.action_space.sample()
-        obs, reward, terminated, truncated, info = env.step(action)
-        print(f"Action: {action}, Reward: {reward}")
-        env.render()
-        if terminated or truncated:
-            print("Episode finished.")
-            break
-    env.close()

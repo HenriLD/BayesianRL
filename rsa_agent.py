@@ -59,16 +59,47 @@ def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos):
         grid_str += "\n"
     print(grid_str)
 
-
-def _calculate_heuristic_utilities(agent_pos, target_pos, states, env):
+def _find_shortest_path_bfs(start_pos, end_pos, state_grid):
     """
-    Calculates the 'world utility' of each action in each state.
-    A "state" is a full 5x5 hypothetical grid.
+    Finds the shortest path length between two points on the 5x5 grid using BFS.
+    Returns path length or np.inf if no path exists.
+    """
+    if start_pos == end_pos:
+        return 0
+
+    q = collections.deque([(start_pos, 0)])  # (position, cost)
+    visited = {start_pos}
+    
+    # All 8 possible moves
+    moves = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
+
+    while q:
+        (r, c), cost = q.popleft()
+
+        for dr, dc in moves:
+            nr, nc = r + dr, c + dc
+
+            if (nr, nc) == end_pos:
+                return cost + 1
+
+            if (0 <= nr < VIEW_SIZE and 0 <= nc < VIEW_SIZE and
+                    (nr, nc) not in visited and state_grid[nr, nc] != 1): # 1 is _wall_cell
+                visited.add((nr, nc))
+                q.append(((nr, nc), cost + 1))
+    
+    return np.inf
+
+def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, k_candidates=3):
+    """
+    Calculates action utilities using a planning heuristic. It identifies the top k
+    cells on the edge of the 5x5 view, finds the shortest path to them, and
+    calculates a utility based on the endpoint value and path cost.
     """
     num_states = len(states)
     num_actions = env.action_space.n
     all_utilities = np.zeros((num_states, num_actions))
     view_radius = VIEW_SIZE // 2
+    agent_local_pos = (view_radius, view_radius)
 
     action_moves = {
         0: (-1, 0), 1: (1, 0), 2: (0, -1), 3: (0, 1),
@@ -76,32 +107,63 @@ def _calculate_heuristic_utilities(agent_pos, target_pos, states, env):
     }
 
     for i, state in enumerate(states):
-        hypothetical_walls = set()
-        for r_local in range(VIEW_SIZE):
-            for c_local in range(VIEW_SIZE):
-                if state[r_local, c_local] == env._wall_cell:
-                    r_global = agent_pos[0] + r_local - view_radius
-                    c_global = agent_pos[1] + c_local - view_radius
-                    hypothetical_walls.add((r_global, c_global))
+        # 1. Identify all non-wall cells on the edge of the 5x5 view
+        edge_cells = []
+        for r_loc in range(VIEW_SIZE):
+            for c_loc in range(VIEW_SIZE):
+                if r_loc == 0 or r_loc == VIEW_SIZE - 1 or c_loc == 0 or c_loc == VIEW_SIZE - 1:
+                    if state[r_loc, c_loc] != env._wall_cell:
+                        edge_cells.append((r_loc, c_loc))
+
+        # 2. Select top k candidate cells based on their distance to the global target
+        if not edge_cells:
+            all_utilities[i, :] = -np.inf  # No valid edges to plan towards
+            continue
+
+        candidate_endpoints = sorted(edge_cells, key=lambda pos: _chebyshev_distance(
+            (agent_pos[0] + pos[0] - view_radius, agent_pos[1] + pos[1] - view_radius),
+            target_pos
+        ))[:k_candidates]
 
         action_utilities = []
-        current_dist_to_target = _chebyshev_distance(agent_pos, target_pos)
-
         for action_idx in range(num_actions):
             move = action_moves[action_idx]
-            next_pos = (agent_pos[0] + move[0], agent_pos[1] + move[1])
+            start_pos = (agent_local_pos[0] + move[0], agent_local_pos[1] + move[1])
 
-            if (next_pos in hypothetical_walls or
-                not (0 <= next_pos[0] < env.grid_size and 0 <= next_pos[1] < env.grid_size)):
+            # Immediate move into a wall is invalid
+            if state[start_pos] == env._wall_cell:
                 action_utilities.append(-np.inf)
                 continue
+            
+            # 3. For each candidate, compute path and combine values
+            path_values = []
+            for end_pos in candidate_endpoints:
+                path_cost = _find_shortest_path_bfs(start_pos, end_pos, state)
 
-            next_dist_to_target = _chebyshev_distance(next_pos, target_pos)
-            utility = current_dist_to_target - next_dist_to_target
-            action_utilities.append(utility)
+                if path_cost != np.inf:
+                    # Convert local endpoint to global position
+                    global_end_pos = (
+                        agent_pos[0] + end_pos[0] - view_radius,
+                        agent_pos[1] + end_pos[1] - view_radius
+                    )
+                    
+                    # Value of the endpoint is higher if it's closer to the global target
+                    endpoint_value = (env.grid_size * 2) - _chebyshev_distance(global_end_pos, target_pos)
+                    
+                    # Combine endpoint value with the cost to get there
+                    combined_value = endpoint_value - path_cost
+                    path_values.append(combined_value)
 
+            # The utility of the action is the best value it can achieve among all candidates
+            if not path_values:
+                action_utilities.append(-np.inf) # Can't reach any candidate from this move
+            else:
+                action_utilities.append(max(path_values))
+        
         all_utilities[i, :] = np.array(action_utilities, dtype=float)
 
+    # Note: Normalization to "probabilities" is handled by the RSA reasoning functions
+    # that call this utility function. We return the raw utilities here.
     return all_utilities
         
 
@@ -210,7 +272,7 @@ class RSAAgent:
     """
     An agent that uses its private 'internal_belief_map' to decide on an action.
     """
-    def __init__(self, env: GridEnvironment, rsa_iterations: int = 10, rationality: float = 10, utility_beta: float = 10, initial_prob: float = 0.5):
+    def __init__(self, env: GridEnvironment, rsa_iterations: int = 10, rationality: float = 10, utility_beta: float = 10, initial_prob: float = 0.3):
         self.env = env
         self.rsa_iterations = rsa_iterations
         self.alpha = rationality
@@ -289,7 +351,7 @@ class Observer:
     An observer that only sees the agent's position and actions.
     It maintains its own belief map and updates it by inverting the agent's RSA model.
     """
-    def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.5, learning_rate: float = 0.3, intelligent_sampling: bool = False):
+    def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.25, learning_rate: float = 0.25, intelligent_sampling: bool = False):
         self.env = env
         self.beta = agent_params.get('beta', 10)
         self.rsa_iterations = agent_params.get('rsa_iterations', 3)
@@ -401,7 +463,7 @@ if __name__ == '__main__':
         num_walls = sum(row.count('#') for row in custom_map)
         total_cells = env.grid_size * env.grid_size
         #true_wall_prob = num_walls / total_cells
-        true_wall_prob = 0.3  # For testing, we set a fixed probability
+        true_wall_prob = 0.1  # For testing, we set a fixed probability
 
         # By default, intelligent_sampling is False.
         # To enable, set intelligent_sampling=True in the constructors below.
@@ -409,7 +471,7 @@ if __name__ == '__main__':
         agent = RSAAgent(env, rsa_iterations=3, initial_prob=true_wall_prob)
         observer = Observer(env, agent_params={
             'beta': agent.beta, 'rsa_iterations': agent.rsa_iterations
-        }, initial_prob=true_wall_prob)
+        }, initial_prob=true_wall_prob, intelligent_sampling=False)
 
         max_steps = 100
         for step in range(max_steps):
@@ -436,7 +498,7 @@ if __name__ == '__main__':
             print("\nActual Environment State:")
             env.render()
             obs = new_obs
-            time.sleep(0.8)
+            time.sleep(0.1)
 
             if terminated or truncated:
                 end_reason = "Target reached" if terminated else "Max steps reached"

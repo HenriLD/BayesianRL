@@ -144,7 +144,7 @@ class RSAAgent:
     """
     An agent that uses its private 'internal_belief_map' to decide on an action.
     """
-    def __init__(self, env: GridEnvironment, rsa_iterations: int = 3, rationality: float = 10, utility_beta: float = 10):
+    def __init__(self, env: GridEnvironment, rsa_iterations: int = 10, rationality: float = 10, utility_beta: float = 10):
         self.env = env
         self.rsa_iterations = rsa_iterations
         self.alpha = rationality
@@ -196,13 +196,6 @@ class RSAAgent:
         P_S_k = P_S0
         for _ in range(self.rsa_iterations):
             with np.errstate(divide='ignore', invalid='ignore'):
-                L_numerator = P_S_k.T * prior
-                L_denominator = L_numerator.sum(axis=1, keepdims=True)
-                P_L_k = np.nan_to_num(L_numerator / L_denominator)
-
-            with np.errstate(divide='ignore', invalid='ignore'):
-                log_P_L_k = np.log(P_L_k)
-                log_P_L_k[np.isneginf(log_P_L_k)] = -1e9
                 exp_utility = np.exp(world_utilities)
                 S_denominator = exp_utility.sum(axis=1, keepdims=True)
                 P_S_k = np.nan_to_num(exp_utility / S_denominator)
@@ -236,6 +229,8 @@ class Observer:
         self.agent_params = agent_params
         self.num_actions = env.action_space.n
         self.observer_belief_map = np.full((env.grid_size, env.grid_size), 0.5)
+        self.beta = agent_params.get('beta', 10)
+        self.rsa_iterations = agent_params.get('rsa_iterations', 3)
 
         if env.agent_pos is not None:
             self.observer_belief_map[env.agent_pos] = 0.0
@@ -281,29 +276,20 @@ class Observer:
                     self.observer_belief_map[r_global, c_global] = prob_wall
 
     def _run_rsa_reasoning_for_observer(self, world_utilities, num_states):
-        """A copy of the agent's reasoning process for the observer to use in its simulation."""
+        """Performs the RSA iterative calculation."""
         prior = np.full(num_states, 1.0 / num_states)
 
         with np.errstate(divide='ignore', invalid='ignore'):
-            exp_utilities = np.exp(self.agent_params['beta'] * world_utilities)
+            exp_utilities = np.exp(self.beta * world_utilities)
             sum_exp_utilities = exp_utilities.sum(axis=1, keepdims=True)
             P_S0 = np.nan_to_num(exp_utilities / sum_exp_utilities)
 
         P_S_k = P_S0
-        for _ in range(self.agent_params['rsa_iterations']):
+        for _ in range(self.rsa_iterations):
             with np.errstate(divide='ignore', invalid='ignore'):
-                L_numerator = P_S_k.T * prior
-                L_denominator = L_numerator.sum(axis=1, keepdims=True)
-                P_L_k = np.nan_to_num(L_numerator / L_denominator)
-
-            with np.errstate(divide='ignore', invalid='ignore'):
-                log_P_L_k = np.log(P_L_k)
-                log_P_L_k[np.isneginf(log_P_L_k)] = -1e9
-                informational_utility = self.agent_params['alpha'] * log_P_L_k.T
-                combined_utility = world_utilities + informational_utility
-                exp_combined_utility = np.exp(combined_utility)
-                S_denominator = exp_combined_utility.sum(axis=1, keepdims=True)
-                P_S_k = np.nan_to_num(exp_combined_utility / S_denominator)
+                exp_utility = np.exp(world_utilities)
+                S_denominator = exp_utility.sum(axis=1, keepdims=True)
+                P_S_k = np.nan_to_num(exp_utility / S_denominator)
         return P_S_k
 
     def render_belief(self, agent_pos, target_pos):
@@ -360,9 +346,8 @@ if __name__ == '__main__':
             if step % 5 == 0:
                 print("Observer's Inferred Belief Map (Shading indicates wall probability):")
                 observer.render_belief(agent_pos, target_pos)
-            else:
-                # Add a newline to keep spacing consistent on steps where the map isn't printed
-                print()
+            
+            print()
 
             action_map = {
                 0: "Up", 1: "Down", 2: "Left", 3: "Right",
@@ -372,6 +357,7 @@ if __name__ == '__main__':
 
             new_obs, reward, terminated, truncated, info = env.step(action)
 
+            print()
             print("\nActual Environment State:")
             env.render()
             obs = new_obs

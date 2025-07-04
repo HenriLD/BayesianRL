@@ -22,12 +22,8 @@ except ImportError:
 COLOR_RESET = "\x1b[0m"
 
 # Define the number of states to sample when the total number of possibilities is too large.
-NUM_STATE_SAMPLES = 2000
+NUM_STATE_SAMPLES = 20000
 VIEW_SIZE = 5
-
-def _chebyshev_distance(pos1, pos2):
-    """Calculates Chebyshev distance (for grid with diagonal moves)."""
-    return max(abs(pos1[0] - pos2[0]), abs(pos1[1] - pos2[1]))
 
 def _get_char_for_prob(prob, default_prob, max_dev, min_dev):
     """
@@ -89,9 +85,10 @@ def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos, 
         grid_str += "\n"
     print(grid_str)
 
-def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic_model, sharpening_factor=3.0):
+def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic_model, sharpening_factor=1.0):
     """
     Calculates action utilities using the value function of a trained RL agent.
+    This version uses BATCH PROCESSING to significantly speed up inference.
     """
     num_states = len(states)
     num_actions = env.action_space.n
@@ -104,40 +101,52 @@ def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic
     }
 
     for i, state_view in enumerate(states):
-        action_utilities = []
+        # --- Batch Preparation ---
+        # Instead of predicting one by one, we create a batch of all valid
+        # observations for the current hypothetical state.
+        batch_obs_np = []
+        valid_action_indices = []
+
         for action_idx in range(num_actions):
             move = action_moves[action_idx]
-            next_agent_pos = (agent_pos[0] + move[0], agent_pos[1] + move[1])
-
+            
             # Check if the move is into a wall within the hypothetical state
             local_next_pos = (view_radius + move[0], view_radius + move[1])
             if state_view[local_next_pos] == env._wall_cell:
-                action_utilities.append(-np.inf)
                 continue
 
-            # Construct the observation dictionary with numpy arrays first
-            obs_np = {
+            # If the action is valid, prepare its observation and add it to the batch
+            next_agent_pos = (agent_pos[0] + move[0], agent_pos[1] + move[1])
+            obs = {
                 'local_view': state_view.astype(np.int32),
                 'agent_pos': np.array(next_agent_pos, dtype=np.int32),
                 'target_pos': np.array(target_pos, dtype=np.int32)
             }
-            
-            # Convert numpy arrays to torch tensors and add a batch dimension
-            # The model's policy expects tensors, not numpy arrays.
+            batch_obs_np.append(obs)
+            valid_action_indices.append(action_idx)
+
+        # --- Batch Prediction ---
+        # If there are any valid actions, predict their values all at once.
+        action_utilities = np.full(num_actions, -np.inf, dtype=float)
+        if batch_obs_np:
+            # Collate the list of dictionaries into a single dictionary of batches
             obs_tensor = {
-                key: torch.as_tensor(value).unsqueeze(0) for key, value in obs_np.items()
+                key: torch.as_tensor(np.stack([obs[key] for obs in batch_obs_np]))
+                for key in batch_obs_np[0]
             }
             
-            # Use the trained model's value function to predict the utility
+            # Use the trained model's value function to predict all utilities in one go
             with torch.no_grad():
-                value = heuristic_model.policy.predict_values(obs_tensor)
+                values = heuristic_model.policy.predict_values(obs_tensor)
             
-            utility = value.item() * sharpening_factor
-            action_utilities.append(utility)
+            # Distribute the results back to the corresponding action indices
+            for j, action_idx in enumerate(valid_action_indices):
+                action_utilities[action_idx] = values[j].item() * sharpening_factor
             
-        all_utilities[i, :] = np.array(action_utilities, dtype=float)
+        all_utilities[i, :] = action_utilities
 
     return all_utilities
+
         
 
 def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state_view=None, use_intelligent_sampling=False):
@@ -248,7 +257,7 @@ class RSAAgent:
     """
     An agent that uses its private 'internal_belief_map' to decide on an action.
     """
-    def __init__(self, env: GridEnvironment, rsa_iterations: int = 10, rationality: float = 10, utility_beta: float = 10, initial_prob: float = 0.3):
+    def __init__(self, env: GridEnvironment, rsa_iterations: int = 10, rationality: float = 1, utility_beta: float = 1, initial_prob: float = 0.3):
         self.env = env
         self.rsa_iterations = rsa_iterations
         self.alpha = rationality
@@ -337,7 +346,7 @@ class Observer:
     An observer that only sees the agent's position and actions.
     It maintains its own belief map and updates it by inverting the agent's RSA model.
     """
-    def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.25, learning_rate: float = 0.5, intelligent_sampling: bool = False):
+    def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.25, learning_rate: float = 0.25, intelligent_sampling: bool = False):
         self.env = env
         self.beta = agent_params.get('beta', 10)
         self.rsa_iterations = agent_params.get('rsa_iterations', 3)

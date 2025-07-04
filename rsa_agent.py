@@ -16,46 +16,64 @@ except ImportError:
 COLOR_RESET = "\x1b[0m"
 
 # Define the number of states to sample when the total number of possibilities is too large.
-NUM_STATE_SAMPLES = 1000
+NUM_STATE_SAMPLES = 2000
 VIEW_SIZE = 5
 
 def _chebyshev_distance(pos1, pos2):
     """Calculates Chebyshev distance (for grid with diagonal moves)."""
     return max(abs(pos1[0] - pos2[0]), abs(pos1[1] - pos2[1]))
 
-def _get_char_for_prob(prob):
+def _get_char_for_prob(prob, default_prob):
     """
-    Maps a wall probability (0.0 to 1.0) to a continuous color gradient string.
-    Low probability (empty space) is black, high probability (wall) is white.
+    Maps a wall probability to a color, normalized against a default probability.
+    Changes are highlighted: cells with probability much higher than default are
+    bright white, and those much lower are dark black.
     """
-    # For cells that are almost certainly empty, display a black dot.
-    if prob < 0.1:
-        # The ANSI code for black is 232.
-        return f"\x1b[38;5;232m . {COLOR_RESET}"
+    # Epsilon to prevent division by zero if default_prob is 0.0 or 1.0
+    epsilon = 1e-9
 
-    # Map the probability to the 24-shade grayscale ramp (232-255).
-    # A low 'prob' maps to a darker color, a high 'prob' maps to a lighter one.
-    gray_index = 232 + round(prob * 23)
+    # If the probability is very close to the default, render as a neutral mid-gray
+    if abs(prob - default_prob) < 0.05:
+        # Index for 50% gray in the 24-shade ramp
+        gray_index = 232 + round(0.5 * 23)
+    
+    # If probability is higher than default, scale from mid-gray to bright white
+    elif prob > default_prob:
+        # Normalize the deviation from 0 to 1
+        normalized_dev = (prob - default_prob) / (1.0 - default_prob + epsilon)
+        # Map the normalized deviation to the upper half of the color scale
+        gray_index = 232 + round((0.5 + 0.5 * normalized_dev) * 23)
+    
+    # If probability is lower than default, scale from mid-gray to dark black
+    else: # prob < default_prob
+        # Normalize the deviation from 0 to 1
+        normalized_dev = (default_prob - prob) / (default_prob + epsilon)
+        # Map the normalized deviation to the lower half of the color scale
+        gray_index = 232 + round((0.5 - 0.5 * normalized_dev) * 23)
 
-    # Dynamically create the ANSI color code for the calculated gray shade.
+    # Ensure the final index is within the valid ANSI grayscale range
+    gray_index = int(np.clip(gray_index, 232, 255))
+
     color_code = f"\x1b[38;5;{gray_index}m"
     block = "███"
 
     return f"{color_code}{block}{COLOR_RESET}"
 
-def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos):
+
+def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos, default_prob):
     """Renders a belief map using 3-character strings to match the environment style."""
     grid_str = ""
     for r in range(grid_size):
         for c in range(grid_size):
             pos = (r, c)
             if pos == tuple(agent_pos):
-                grid_str += ' A '  # 3 characters for alignment
+                grid_str += ' A '
             elif pos == tuple(target_pos):
-                grid_str += ' T '  # 3 characters for alignment
+                grid_str += ' T '
             else:
                 prob = belief_map[r, c]
-                grid_str += _get_char_for_prob(prob)
+                # Pass both the current and default probability
+                grid_str += _get_char_for_prob(prob, default_prob)
         grid_str += "\n"
     print(grid_str)
 
@@ -89,7 +107,7 @@ def _find_shortest_path_bfs(start_pos, end_pos, state_grid):
     
     return np.inf
 
-def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, k_candidates=3):
+def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, k_candidates=5, sharpening_factor=5.0):
     """
     Calculates action utilities using a planning heuristic. It identifies the top k
     cells on the edge of the 5x5 view, finds the shortest path to them, and
@@ -158,7 +176,8 @@ def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, k_candida
             if not path_values:
                 action_utilities.append(-np.inf) # Can't reach any candidate from this move
             else:
-                action_utilities.append(max(path_values))
+                utility = max(path_values) * sharpening_factor
+                action_utilities.append(utility)
         
         all_utilities[i, :] = np.array(action_utilities, dtype=float)
 
@@ -220,7 +239,10 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state
                 if use_intelligent_sampling:
                     cell_type = np.random.choice([env._wall_cell, env._empty_cell], p=[prob_wall, 1 - prob_wall])
                 else:
-                    cell_type = np.random.choice([env._empty_cell, env._wall_cell])
+                    cell_type = np.random.choice(
+                    [env._wall_cell, env._empty_cell],
+                    p=[true_wall_prob, 1 - true_wall_prob]
+                )
                 new_state[r_loc, c_loc] = cell_type
             possible_states.append(new_state)
     else:
@@ -279,6 +301,7 @@ class RSAAgent:
         self.beta = utility_beta
         self.num_actions = env.action_space.n
         self.internal_belief_map = np.full((env.grid_size, env.grid_size), initial_prob)
+        self.default_prob = initial_prob
         
 
         if env.agent_pos is not None:
@@ -343,7 +366,7 @@ class RSAAgent:
 
     def render_internal_belief(self, agent_pos, target_pos):
         """Renders the agent's internal belief map using a color gradient."""
-        _render_belief_map_with_chars(self.internal_belief_map, self.env.grid_size, agent_pos, target_pos)
+        _render_belief_map_with_chars(self.internal_belief_map, self.env.grid_size, agent_pos, target_pos, self.default_prob)
 
 
 class Observer:
@@ -351,7 +374,7 @@ class Observer:
     An observer that only sees the agent's position and actions.
     It maintains its own belief map and updates it by inverting the agent's RSA model.
     """
-    def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.25, learning_rate: float = 0.25, intelligent_sampling: bool = False):
+    def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.25, learning_rate: float = 0.5, intelligent_sampling: bool = False):
         self.env = env
         self.beta = agent_params.get('beta', 10)
         self.rsa_iterations = agent_params.get('rsa_iterations', 3)
@@ -359,6 +382,7 @@ class Observer:
         self.intelligent_sampling = intelligent_sampling
         self.observer_belief_map = np.full((env.grid_size, env.grid_size), initial_prob)
         self.view_radius = VIEW_SIZE // 2
+        self.default_prob = initial_prob
 
         if env.agent_pos is not None:
             self.observer_belief_map[env.agent_pos] = 0.0
@@ -435,25 +459,26 @@ class Observer:
 
     def render_belief(self, agent_pos, target_pos):
         """Renders the observer's belief map using a color gradient."""
-        _render_belief_map_with_chars(self.observer_belief_map, self.env.grid_size, agent_pos, target_pos)
+        _render_belief_map_with_chars(self.observer_belief_map, self.env.grid_size, agent_pos, target_pos, self.default_prob)
 
 
 # --- Main execution block ---
 if __name__ == '__main__':
     try:
         custom_map = [
-            "############",
-            "#          #",
-            "#  # T     #",
-            "#  ####    #",
-            "#  #       #",
-            "#      ### #",
-            "#  #       #",
-            "#  #   #   #",
-            "# #### ##  #",
-            "#   A      #",
-            "#          #",
-            "############",
+            "#############",
+            "#      #    #",
+            "#  # T      #",
+            "#  ####  #  #",
+            "#  #     #  #",
+            "#      ### ##",
+            "#  #       ##",
+            "#  #   #   ##",
+            "# #### ##  ##",
+            "#   A   #   #",
+            "#        #  #",
+            "#  #  #  #  #",
+            "#############",
         ]
 
         env = GridEnvironment(grid_map=custom_map, render_mode='human')
@@ -462,16 +487,16 @@ if __name__ == '__main__':
         # Calculate the true probability of a wall in the given map
         num_walls = sum(row.count('#') for row in custom_map)
         total_cells = env.grid_size * env.grid_size
-        #true_wall_prob = num_walls / total_cells
-        true_wall_prob = 0.1  # For testing, we set a fixed probability
+        true_wall_prob = num_walls / total_cells
+        
 
         # By default, intelligent_sampling is False.
         # To enable, set intelligent_sampling=True in the constructors below.
 
-        agent = RSAAgent(env, rsa_iterations=3, initial_prob=true_wall_prob)
+        agent = RSAAgent(env, rsa_iterations=10, initial_prob=true_wall_prob)
         observer = Observer(env, agent_params={
             'beta': agent.beta, 'rsa_iterations': agent.rsa_iterations
-        }, initial_prob=true_wall_prob, intelligent_sampling=False)
+        }, initial_prob=true_wall_prob, intelligent_sampling=False, learning_rate=0.25)
 
         max_steps = 100
         for step in range(max_steps):

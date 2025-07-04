@@ -1,0 +1,10 @@
+# Ignore everything
+*
+
+# Except these files
+!rsa_agent.py
+!train_heuristic.py
+!env.py
+!heuristic_agent.zip
+!requirements.txt
+!.gitignore

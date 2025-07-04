@@ -11,22 +11,33 @@ except ImportError:
     print("Please ensure the updated GridEnvironment class is in 'env.py'.")
     exit()
 
+
+# --- ANSI Color Constants for Rendering ---
+COLOR_RESET = "\x1b[0m"
+
 def _chebyshev_distance(pos1, pos2):
     """Calculates Chebyshev distance (for grid with diagonal moves)."""
     return max(abs(pos1[0] - pos2[0]), abs(pos1[1] - pos2[1]))
 
 def _get_char_for_prob(prob):
-    """Maps a probability (0.0 to 1.0) to a 3-character string for a consistent grid."""
+    """
+    Maps a wall probability (0.0 to 1.0) to a continuous color gradient string.
+    Low probability (empty space) is black, high probability (wall) is white.
+    """
+    # For cells that are almost certainly empty, display a black dot.
     if prob < 0.1:
-        return ' . '  # Almost certainly empty
-    elif prob < 0.35:
-        return '░░░'  # Low probability of wall
-    elif prob < 0.5:
-        return '▒▒▒'  # Medium probability
-    elif prob < 0.65:
-        return '▓▓▓'  # High probability
-    else:
-        return '███'  # Almost certainly a wall
+        # The ANSI code for black is 232.
+        return f"\x1b[38;5;232m . {COLOR_RESET}"
+
+    # Map the probability to the 24-shade grayscale ramp (232-255).
+    # A low 'prob' maps to a darker color, a high 'prob' maps to a lighter one.
+    gray_index = 232 + round(prob * 23)
+
+    # Dynamically create the ANSI color code for the calculated gray shade.
+    color_code = f"\x1b[38;5;{gray_index}m"
+    block = "███"
+
+    return f"{color_code}{block}{COLOR_RESET}"
 
 def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos):
     """Renders a belief map using 3-character strings to match the environment style."""
@@ -368,17 +379,18 @@ class Observer:
 if __name__ == '__main__':
     try:
         custom_map = [
-            "###########",
-            "#         #",
-            "#  # T    #",
-            "#  ####   #",
-            "#  #      #",
-            "#      ####",
-            "#  #      #",
-            "#  #   #  #",
-            "# #### ## #",
-            "#   A     #",
-            "###########",
+            "############",
+            "#          #",
+            "#  # T     #",
+            "#  ####    #",
+            "#  #       #",
+            "#      ### #",
+            "#  #       #",
+            "#  #   #   #",
+            "# #### ##  #",
+            "#   A      #",
+            "#          #",
+            "############",
         ]
 
         env = GridEnvironment(grid_map=custom_map, render_mode='human')
@@ -387,7 +399,8 @@ if __name__ == '__main__':
         # Calculate the true probability of a wall in the given map
         num_walls = sum(row.count('#') for row in custom_map)
         total_cells = env.grid_size * env.grid_size
-        true_wall_prob = num_walls / total_cells
+        #true_wall_prob = num_walls / total_cells
+        true_wall_prob = 0.3  # For testing, we set a fixed probability
 
         agent = RSAAgent(env, initial_prob=true_wall_prob)
         observer = Observer(env, agent_params={
@@ -464,7 +477,7 @@ if __name__ == '__main__':
         env.close()
 
         print(f"True wall probability in the environment: {true_wall_prob:.2f}")
-        
+
     except Exception as e:
         print(f"\nAn error occurred: {e}")
         import traceback

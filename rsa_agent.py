@@ -19,11 +19,11 @@ def _get_char_for_prob(prob):
     """Maps a probability (0.0 to 1.0) to a 3-character string for a consistent grid."""
     if prob < 0.1:
         return ' . '  # Almost certainly empty
-    elif prob < 0.3:
+    elif prob < 0.35:
         return '░░░'  # Low probability of wall
-    elif prob < 0.6:
+    elif prob < 0.5:
         return '▒▒▒'  # Medium probability
-    elif prob < 0.9:
+    elif prob < 0.65:
         return '▓▓▓'  # High probability
     else:
         return '███'  # Almost certainly a wall
@@ -40,7 +40,6 @@ def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos):
                 grid_str += ' T '  # 3 characters for alignment
             else:
                 prob = belief_map[r, c]
-                # The function now returns a 3-char string, so just append it.
                 grid_str += _get_char_for_prob(prob)
         grid_str += "\n"
     print(grid_str)
@@ -137,6 +136,41 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env):
         possible_states.append(new_state)
 
     return possible_states
+
+def render_side_by_side_views(wall_probabilities, ground_truth_view, env):
+    """
+    Renders the observer's inferred wall probabilities next to the
+    agent's actual 3x3 ground truth view for comparison.
+    """
+    header_left = "Observer's Inference"
+    header_right = "Agent's Ground Truth"
+    print(f"\n{header_left:^20}   |   {header_right:^20}")
+    print(f"{'-'*20:^20}   |   {'-'*20:^20}")
+
+    # Map for rendering the ground truth characters
+    truth_char_map = {
+        env._empty_cell: '.',
+        env._wall_cell: '#',
+        env._agent_cell: 'A',
+        env._target_cell: 'T'
+    }
+
+    for r in range(3):
+        # Build the left side (probabilities)
+        left_row_str = ""
+        for c in range(3):
+            prob = wall_probabilities[r, c]
+            left_row_str += f" {int(prob * 100):>2d}% "
+
+        # Build the right side (ground truth)
+        right_row_str = ""
+        for c in range(3):
+            cell_val = ground_truth_view[r, c]
+            char = truth_char_map.get(cell_val, '?')
+            right_row_str += f"  {char}  "
+        
+        print(f"{left_row_str:^20}   |   {right_row_str:^20}")
+    print()
 
 
 class RSAAgent:
@@ -236,33 +270,38 @@ class Observer:
         if env.target_pos is not None:
             self.observer_belief_map[env.target_pos] = 0.0
 
-    def update_belief(self, agent_pos, target_pos, action):
-        """Infers the state of the world based on the agent's action."""
+
+    def update_belief(self, agent_pos, target_pos, action) -> np.ndarray:
+        """
+        Infers the state of the world based on the agent's action and
+        returns a 3x3 probability map of the agent's local area.
+        """
         # 1. Generate states based on the *observer's* current belief.
         possible_states = _generate_possible_states(agent_pos, target_pos, self.observer_belief_map, self.env)
+        local_wall_probs = np.zeros((3, 3))
+
         if not possible_states:
-            return
+            return local_wall_probs
 
         num_local_states = len(possible_states)
         prior = np.full(num_local_states, 1.0 / num_local_states)
 
-        # 2. Simulate the agent's reasoning process to get the policy it would use.
+        # 2. Simulate the agent's reasoning process.
         world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env)
-
-        # Re-run the same RSA reasoning the agent would have
         P_S_k = self._run_rsa_reasoning_for_observer(world_utilities, num_local_states)
 
-        # 3. Invert the model: Calculate the listener's belief (posterior over states).
+        # 3. Invert the model to get the posterior over states.
         with np.errstate(divide='ignore', invalid='ignore'):
             L_numerator = P_S_k.T * prior
             L_denominator = L_numerator.sum(axis=1, keepdims=True)
             P_L_k = np.nan_to_num(L_numerator / L_denominator)
 
-        # The probability distribution over states, given the action the agent took.
         state_posterior = P_L_k[action, :]
 
-        # 4. Update the observer's belief map using this posterior.
-        self.observer_belief_map[agent_pos] = 0.0
+        # 4. Update the observer's global belief map and create the local probability map.
+        self.observer_belief_map[agent_pos] = 0.0 # Agent's location is not a wall.
+        local_wall_probs[1, 1] = 0.0
+
         for r_local in range(3):
             for c_local in range(3):
                 if r_local == 1 and c_local == 1: continue
@@ -272,7 +311,12 @@ class Observer:
 
                 if 0 <= r_global < self.env.grid_size and 0 <= c_global < self.env.grid_size:
                     prob_wall = sum(state_posterior[i] for i, s in enumerate(possible_states) if s[r_local, c_local] == self.env._wall_cell)
+                    
+                    # Update both the global map and the local map to be returned
                     self.observer_belief_map[r_global, c_global] = prob_wall
+                    local_wall_probs[r_local, c_local] = prob_wall
+
+        return local_wall_probs
 
     def _run_rsa_reasoning_for_observer(self, world_utilities, num_states):
         """Performs the RSA iterative calculation."""
@@ -339,7 +383,9 @@ if __name__ == '__main__':
 
             action, action_probs = agent.choose_action(obs)
 
-            observer.update_belief(agent_pos, target_pos, action)
+            # Get local probabilities from the observer and render the new visualization
+            local_probs = observer.update_belief(agent_pos, target_pos, action)
+            render_side_by_side_views(local_probs, obs['local_view'], env)
             
             # Display observer belief map only every 5 steps (includes step 0).
             if step % 5 == 0:

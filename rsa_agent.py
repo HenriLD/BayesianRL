@@ -16,33 +16,32 @@ def _chebyshev_distance(pos1, pos2):
     return max(abs(pos1[0] - pos2[0]), abs(pos1[1] - pos2[1]))
 
 def _get_char_for_prob(prob):
-    """Maps a probability (0.0 to 1.0) to a Unicode block character for a gradient effect."""
+    """Maps a probability (0.0 to 1.0) to a 3-character string for a consistent grid."""
     if prob < 0.1:
-        return ' '  # Almost certainly empty
+        return ' . '  # Almost certainly empty
     elif prob < 0.3:
-        return '░'  # Low probability of wall
+        return '░░░'  # Low probability of wall
     elif prob < 0.6:
-        return '▒'  # Medium probability
+        return '▒▒▒'  # Medium probability
     elif prob < 0.9:
-        return '▓'  # High probability
+        return '▓▓▓'  # High probability
     else:
-        return '█'  # Almost certainly a wall
+        return '███'  # Almost certainly a wall
 
 def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos):
-    """Renders a belief map using Unicode block characters to show a gradient."""
+    """Renders a belief map using 3-character strings to match the environment style."""
     grid_str = ""
     for r in range(grid_size):
         for c in range(grid_size):
             pos = (r, c)
             if pos == tuple(agent_pos):
-                grid_str += ' A  '  # 4 characters for alignment
+                grid_str += ' A '  # 3 characters for alignment
             elif pos == tuple(target_pos):
-                grid_str += ' T  '  # 4 characters for alignment
+                grid_str += ' T '  # 3 characters for alignment
             else:
                 prob = belief_map[r, c]
-                char = _get_char_for_prob(prob)
-                # Use the character twice for a wider, more visible block
-                grid_str += f' {char}{char} '
+                # The function now returns a 3-char string, so just append it.
+                grid_str += _get_char_for_prob(prob)
         grid_str += "\n"
     print(grid_str)
 

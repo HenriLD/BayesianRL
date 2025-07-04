@@ -89,7 +89,7 @@ def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos, 
         grid_str += "\n"
     print(grid_str)
 
-def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic_model, sharpening_factor=1.0):
+def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic_model, sharpening_factor=3.0):
     """
     Calculates action utilities using the value function of a trained RL agent.
     """
@@ -115,16 +115,22 @@ def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic
                 action_utilities.append(-np.inf)
                 continue
 
-            # Construct the observation dictionary that the trained model expects
-            obs = {
+            # Construct the observation dictionary with numpy arrays first
+            obs_np = {
                 'local_view': state_view.astype(np.int32),
                 'agent_pos': np.array(next_agent_pos, dtype=np.int32),
                 'target_pos': np.array(target_pos, dtype=np.int32)
             }
             
+            # Convert numpy arrays to torch tensors and add a batch dimension
+            # The model's policy expects tensors, not numpy arrays.
+            obs_tensor = {
+                key: torch.as_tensor(value).unsqueeze(0) for key, value in obs_np.items()
+            }
+            
             # Use the trained model's value function to predict the utility
             with torch.no_grad():
-                value = heuristic_model.policy.predict_values(obs)
+                value = heuristic_model.policy.predict_values(obs_tensor)
             
             utility = value.item() * sharpening_factor
             action_utilities.append(utility)

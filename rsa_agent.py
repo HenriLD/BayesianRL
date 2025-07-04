@@ -4,7 +4,6 @@ import time
 import os
 import collections
 
-# We import the GridEnvironment from the file created previously.
 try:
     from env import GridEnvironment
 except ImportError:
@@ -204,11 +203,9 @@ class RSAAgent:
             with np.errstate(divide='ignore', invalid='ignore'):
                 log_P_L_k = np.log(P_L_k)
                 log_P_L_k[np.isneginf(log_P_L_k)] = -1e9
-                informational_utility = self.alpha * log_P_L_k.T
-                combined_utility = world_utilities + informational_utility
-                exp_combined_utility = np.exp(combined_utility)
-                S_denominator = exp_combined_utility.sum(axis=1, keepdims=True)
-                P_S_k = np.nan_to_num(exp_combined_utility / S_denominator)
+                exp_utility = np.exp(world_utilities)
+                S_denominator = exp_utility.sum(axis=1, keepdims=True)
+                P_S_k = np.nan_to_num(exp_utility / S_denominator)
         return P_S_k
 
     def update_internal_belief(self, observation):

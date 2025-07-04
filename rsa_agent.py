@@ -86,7 +86,7 @@ def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos, 
         grid_str += "\n"
     print(grid_str)
 
-def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic_model, sharpening_factor=1.0):
+def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic_model, sharpening_factor=3.0):
     """
     Calculates action utilities using the value function of a trained RL agent.
     This version uses BATCH PROCESSING to significantly speed up inference.
@@ -468,7 +468,7 @@ if __name__ == '__main__':
         custom_map = [
             "##############",
             "#      #     #",
-            "#  ##T   #   #",
+            "# T##    #   #",
             "#   ## # #   #",
             "#      #     #",
             "# # #        #",
@@ -478,7 +478,7 @@ if __name__ == '__main__':
             "# ####  ##  ##",
             "#    #  # #  #",
             "# ##    #    #",
-            "#A#  ####    #",
+            "# # A####    #",
             "##############",
         ]
 

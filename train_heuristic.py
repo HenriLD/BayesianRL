@@ -185,7 +185,7 @@ def train_agent(training_steps: int = 100_000, save_path: str = "heuristic_agent
 if __name__ == '__main__':
 
     # Set the total number of training steps.
-    TOTAL_TRAINING_STEPS = 150_000
+    TOTAL_TRAINING_STEPS = 1_500_000
     
     # Define the name for the saved model file.
     MODEL_SAVE_PATH = "heuristic_agent.zip"

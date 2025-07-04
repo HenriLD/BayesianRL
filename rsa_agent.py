@@ -149,11 +149,9 @@ def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic
 
         
 
-def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state_view=None, use_intelligent_sampling=False):
+def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state_view=None, use_intelligent_sampling=False, unintelligent_prob=0.5):
     """
     Generates possible 5x5 local states based on a belief map.
-    If the number of possibilities is too high, it samples them.
-    Sampling can be uniform or weighted (intelligent).
     """
     base_state = np.full((VIEW_SIZE, VIEW_SIZE), env._empty_cell)
     uncertain_cells = []
@@ -168,11 +166,9 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state
             if global_pos == agent_pos:
                 base_state[r_local, c_local] = env._agent_cell if agent_pos != target_pos else env._target_cell
                 continue
-
             if global_pos == target_pos:
                 base_state[r_local, c_local] = env._target_cell
                 continue
-
             if not (0 <= r_global < env.grid_size and 0 <= c_global < env.grid_size):
                 base_state[r_local, c_local] = env._wall_cell
             else:
@@ -196,18 +192,25 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state
             possible_states.append(new_state)
 
     elif num_uncertain > 10:
-        for _ in range(NUM_STATE_SAMPLES):
-            new_state = base_state.copy()
-            for (r_loc, c_loc), prob_wall in uncertain_cells:
-                if use_intelligent_sampling:
-                    cell_type = np.random.choice([env._wall_cell, env._empty_cell], p=[prob_wall, 1 - prob_wall])
-                else:
-                    cell_type = np.random.choice(
-                    [env._wall_cell, env._empty_cell],
-                    p=[true_wall_prob, 1 - true_wall_prob]
-                )
-                new_state[r_loc, c_loc] = cell_type
-            possible_states.append(new_state)
+        # --- Vectorized State Generation ---
+        uncertain_coords, uncertain_probs = zip(*uncertain_cells)
+        uncertain_probs = np.array(uncertain_probs)
+        
+        random_matrix = np.random.rand(NUM_STATE_SAMPLES, num_uncertain)
+        
+        if use_intelligent_sampling:
+            is_wall_matrix = random_matrix < uncertain_probs
+        else:
+            is_wall_matrix = random_matrix < unintelligent_prob
+            
+        cell_values = np.where(is_wall_matrix, env._wall_cell, env._empty_cell)
+        
+        possible_states_np = np.tile(base_state, (NUM_STATE_SAMPLES, 1, 1))
+        
+        rows, cols = zip(*uncertain_coords)
+        possible_states_np[:, rows, cols] = cell_values
+        
+        possible_states = [s for s in possible_states_np]
     else:
         possible_states.append(base_state)
 
@@ -216,6 +219,7 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state
             possible_states.append(true_state_view)
 
     return possible_states
+
 
 def render_side_by_side_views(wall_probabilities, ground_truth_view, env):
     """

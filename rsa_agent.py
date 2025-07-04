@@ -2,13 +2,19 @@ import numpy as np
 import itertools
 import time
 import os
-import collections
 
 try:
     from env import GridEnvironment
 except ImportError:
     print("Error: Could not import GridEnvironment.")
     print("Please ensure the updated GridEnvironment class is in 'env.py'.")
+    exit()
+
+try:
+    from stable_baselines3 import PPO
+except ImportError:
+    print("Error: Could not import Stable-Baselines3.")
+    print("Please install it with: pip install stable-baselines3[extra]")
     exit()
 
 
@@ -83,112 +89,48 @@ def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos, 
         grid_str += "\n"
     print(grid_str)
 
-def _find_shortest_path_bfs(start_pos, end_pos, state_grid):
+def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic_model, sharpening_factor=1.0):
     """
-    Finds the shortest path length between two points on the 5x5 grid using BFS.
-    Returns path length or np.inf if no path exists.
-    """
-    if start_pos == end_pos:
-        return 0
-
-    q = collections.deque([(start_pos, 0)])  # (position, cost)
-    visited = {start_pos}
-    
-    # All 8 possible moves
-    moves = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
-
-    while q:
-        (r, c), cost = q.popleft()
-
-        for dr, dc in moves:
-            nr, nc = r + dr, c + dc
-
-            if (nr, nc) == end_pos:
-                return cost + 1
-
-            if (0 <= nr < VIEW_SIZE and 0 <= nc < VIEW_SIZE and
-                    (nr, nc) not in visited and state_grid[nr, nc] != 1): # 1 is _wall_cell
-                visited.add((nr, nc))
-                q.append(((nr, nc), cost + 1))
-    
-    return np.inf
-
-def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, k_candidates=5, sharpening_factor=5.0):
-    """
-    Calculates action utilities using a planning heuristic. It identifies the top k
-    cells on the edge of the 5x5 view, finds the shortest path to them, and
-    calculates a utility based on the endpoint value and path cost.
+    Calculates action utilities using the value function of a trained RL agent.
     """
     num_states = len(states)
     num_actions = env.action_space.n
     all_utilities = np.zeros((num_states, num_actions))
     view_radius = VIEW_SIZE // 2
-    agent_local_pos = (view_radius, view_radius)
 
     action_moves = {
         0: (-1, 0), 1: (1, 0), 2: (0, -1), 3: (0, 1),
         4: (-1, -1), 5: (-1, 1), 6: (1, -1), 7: (1, 1)
     }
 
-    for i, state in enumerate(states):
-        # 1. Identify all non-wall cells on the edge of the 5x5 view
-        edge_cells = []
-        for r_loc in range(VIEW_SIZE):
-            for c_loc in range(VIEW_SIZE):
-                if r_loc == 0 or r_loc == VIEW_SIZE - 1 or c_loc == 0 or c_loc == VIEW_SIZE - 1:
-                    if state[r_loc, c_loc] != env._wall_cell:
-                        edge_cells.append((r_loc, c_loc))
-
-        # 2. Select top k candidate cells based on their distance to the global target
-        if not edge_cells:
-            all_utilities[i, :] = -np.inf  # No valid edges to plan towards
-            continue
-
-        candidate_endpoints = sorted(edge_cells, key=lambda pos: _chebyshev_distance(
-            (agent_pos[0] + pos[0] - view_radius, agent_pos[1] + pos[1] - view_radius),
-            target_pos
-        ))[:k_candidates]
-
+    for i, state_view in enumerate(states):
         action_utilities = []
         for action_idx in range(num_actions):
             move = action_moves[action_idx]
-            start_pos = (agent_local_pos[0] + move[0], agent_local_pos[1] + move[1])
+            next_agent_pos = (agent_pos[0] + move[0], agent_pos[1] + move[1])
 
-            # Immediate move into a wall is invalid
-            if state[start_pos] == env._wall_cell:
+            # Check if the move is into a wall within the hypothetical state
+            local_next_pos = (view_radius + move[0], view_radius + move[1])
+            if state_view[local_next_pos] == env._wall_cell:
                 action_utilities.append(-np.inf)
                 continue
+
+            # Construct the observation dictionary that the trained model expects
+            obs = {
+                'local_view': state_view.astype(np.int32),
+                'agent_pos': np.array(next_agent_pos, dtype=np.int32),
+                'target_pos': np.array(target_pos, dtype=np.int32)
+            }
             
-            # 3. For each candidate, compute path and combine values
-            path_values = []
-            for end_pos in candidate_endpoints:
-                path_cost = _find_shortest_path_bfs(start_pos, end_pos, state)
-
-                if path_cost != np.inf:
-                    # Convert local endpoint to global position
-                    global_end_pos = (
-                        agent_pos[0] + end_pos[0] - view_radius,
-                        agent_pos[1] + end_pos[1] - view_radius
-                    )
-                    
-                    # Value of the endpoint is higher if it's closer to the global target
-                    endpoint_value = (env.grid_size * 2) - _chebyshev_distance(global_end_pos, target_pos)
-                    
-                    # Combine endpoint value with the cost to get there
-                    combined_value = endpoint_value - path_cost
-                    path_values.append(combined_value)
-
-            # The utility of the action is the best value it can achieve among all candidates
-            if not path_values:
-                action_utilities.append(-np.inf) # Can't reach any candidate from this move
-            else:
-                utility = max(path_values) * sharpening_factor
-                action_utilities.append(utility)
-        
+            # Use the trained model's value function to predict the utility
+            with torch.no_grad():
+                value = heuristic_model.policy.predict_values(obs)
+            
+            utility = value.item() * sharpening_factor
+            action_utilities.append(utility)
+            
         all_utilities[i, :] = np.array(action_utilities, dtype=float)
 
-    # Note: Normalization to "probabilities" is handled by the RSA reasoning functions
-    # that call this utility function. We return the raw utilities here.
     return all_utilities
         
 
@@ -315,6 +257,14 @@ class RSAAgent:
         if env.target_pos is not None:
             self.internal_belief_map[env.target_pos] = 0.0
 
+        # Load the trained heuristic model
+        try:
+            self.heuristic_model = PPO.load(model_path, env=env)
+            print("Heuristic model loaded successfully.")
+        except Exception as e:
+            print(f"Error loading heuristic model: {e}")
+            self.heuristic_model = None
+
     def choose_action(self, observation):
         agent_pos = tuple(observation['agent_pos'])
         target_pos = tuple(observation['target_pos'])
@@ -332,7 +282,8 @@ class RSAAgent:
         
         assert s_true_idx != -1, "True state not found in generated states."
 
-        world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env)
+        # Calculate the world utilities for each possible state using the heuristic model
+        world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env, heuristic_model=self.heuristic_model)
 
         # This is the agent's reasoning based on its private information
         P_S_k = self._run_rsa_reasoning(world_utilities, len(possible_states))
@@ -395,6 +346,13 @@ class Observer:
         if env.target_pos is not None:
             self.observer_belief_map[env.target_pos] = 0.0
 
+        # Load the trained heuristic model
+        try:
+            self.heuristic_model = PPO.load(model_path, env=env)
+        except Exception as e:
+            print(f"Error loading heuristic model for observer: {e}")
+            self.heuristic_model = None
+
     def _run_rsa_reasoning_for_observer(self, world_utilities, num_states):
         """Performs the RSA iterative calculation."""
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -421,7 +379,7 @@ class Observer:
         num_local_states = len(possible_states)
         prior = np.full(num_local_states, 1.0 / num_local_states)
 
-        world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env)
+        world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env, heuristic_model=self.heuristic_model)
         P_S_k = self._run_rsa_reasoning_for_observer(world_utilities, num_local_states)
 
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -471,6 +429,7 @@ class Observer:
 # --- Main execution block ---
 if __name__ == '__main__':
     try:
+        import torch
         """custom_map = [
             "#############",
             "#      #    #",
@@ -510,8 +469,9 @@ if __name__ == '__main__':
         num_walls = sum(row.count('#') for row in custom_map)
         total_cells = env.grid_size * env.grid_size
         true_wall_prob = num_walls / total_cells
-        
 
+        model_path = "heuristic_agent.zip"
+        
         # By default, intelligent_sampling is False.
         # To enable, set intelligent_sampling=True in the constructors below.
 
@@ -545,7 +505,7 @@ if __name__ == '__main__':
             print("\nActual Environment State:")
             env.render()
             obs = new_obs
-            time.sleep(0.1)
+            time.sleep(0.3)
 
             if terminated or truncated:
                 end_reason = "Target reached" if terminated else "Max steps reached"

@@ -2,6 +2,7 @@ import numpy as np
 import itertools
 import time
 import os
+import torch
 
 try:
     from env import GridEnvironment

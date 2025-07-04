@@ -13,16 +13,15 @@ except ImportError:
     exit()
 
 # --- Predefined Maps for Training ---
-# Define a set of fixed maps. The agent will be trained on these environments.
-# 'T' is the target. ' ' is empty space. '#' is a wall.
-# The agent 'A' will be placed randomly in an empty space at the start of each episode.
+# Define a set of fixed map layouts. The agent 'A' and target 'T' will be
+# placed randomly in empty spaces at the start of each training episode.
 PREDEFINED_MAPS = [
     [
         "##############",
         "#      #     #",
         "#   #     # ##",
         "#  ######  # #",
-        "#     T#    ##",
+        "#      #    ##",
         "######## #   #",
         "#  #  ##     #",
         "# #   #      #",
@@ -41,7 +40,7 @@ PREDEFINED_MAPS = [
         "#    #   #   #",
         "#    #   #   #",
         "#    #   #   #",
-        "#    T       #",
+        "#            #",
         "#  #         #",
         "#  #    ### ##",
         "#  #     #   #",
@@ -52,7 +51,7 @@ PREDEFINED_MAPS = [
     [
         "##############",
         "#      #     #",
-        "#  ##T   #   #",
+        "#  ##    #   #",
         "#   ## # #   #",
         "# #    ###   #",
         "# # #        #",
@@ -68,7 +67,7 @@ PREDEFINED_MAPS = [
     [
         "##############",
         "#      #     #",
-        "#  # T       #",
+        "#  #         #",
         "#  ##### #   #",
         "#  #     #   #",
         "#     ####  ##",
@@ -87,7 +86,8 @@ PREDEFINED_MAPS = [
 class TrainingEnv(GridEnvironment):
     """
     A wrapper around the GridEnvironment that, on each reset, selects a random
-    map from a predefined list and places the agent at a random valid starting position.
+    map layout, and then randomly places both the agent 'A' and the target 'T'
+    in any of the available empty spaces.
     """
     def __init__(self, maps):
         self.maps = maps
@@ -104,28 +104,35 @@ class TrainingEnv(GridEnvironment):
         # Create a mutable copy (list of lists of characters) to modify
         new_map = [list(row) for row in selected_map_template]
 
-        # 2. Find all valid starting locations (empty spaces)
-        valid_starts = []
+        # 2. Find all valid spawn locations (empty spaces ' ' and the original 'T' position)
+        valid_spawn_points = []
         for r, row in enumerate(new_map):
             for c, char in enumerate(row):
-                if char == ' ':
-                    valid_starts.append((r, c))
+                if char == ' ' or char == 'T':
+                    valid_spawn_points.append((r, c))
+                    # Ensure the original 'T' position is treated as an empty space for placement
+                    if char == 'T':
+                        new_map[r][c] = ' '
 
-        if not valid_starts:
-            raise ValueError("A predefined map has no empty spaces for the agent to start.")
+        # 3. Ensure there are at least two empty spots for the agent and target
+        if len(valid_spawn_points) < 2:
+            raise ValueError("A predefined map has fewer than two empty spaces for the agent and target.")
         
-        # 3. Choose a random start position and place the agent 'A'
-        start_pos = random.choice(valid_starts)
-        new_map[start_pos[0]][start_pos[1]] = 'A'
+        # 4. Choose two distinct random positions for the agent and target
+        agent_pos, target_pos = random.sample(valid_spawn_points, 2)
+        
+        # 5. Place the agent 'A' and target 'T' in the chosen positions
+        new_map[agent_pos[0]][agent_pos[1]] = 'A'
+        new_map[target_pos[0]][target_pos[1]] = 'T'
 
-        # 4. Set this newly configured map as the one to be used by the environment
+        # 6. Set this newly configured map as the one to be used by the environment
         self.grid_map = ["".join(row) for row in new_map]
 
-        # 5. Now, call the parent's logic to build the grid state from self.grid_map.
+        # 7. Now, call the parent's logic to build the grid state from self.grid_map.
         # This populates self.grid, self.walls, self.agent_pos, self.target_pos etc.
         self._generate_grid_from_map()
         
-        # 6. Finalize the reset process
+        # 8. Finalize the reset process
         self._current_step = 0
         observation = self._get_observation()
         info = {}
@@ -141,8 +148,7 @@ def train_agent(training_steps: int = 100_000, save_path: str = "heuristic_agent
         save_path (str): The file path to save the trained model to.
     """
     print("Initializing environment for training...")
-    # Instead of a single random grid, we use the custom TrainingEnv
-    # which cycles through a set of predefined maps with random start points.
+    # The TrainingEnv now randomizes both agent and target positions on predefined layouts.
     env = TrainingEnv(maps=PREDEFINED_MAPS)
 
     # It's good practice to check that the custom environment follows the gym API

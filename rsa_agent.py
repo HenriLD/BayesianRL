@@ -177,13 +177,14 @@ class RSAAgent:
     """
     An agent that uses its private 'internal_belief_map' to decide on an action.
     """
-    def __init__(self, env: GridEnvironment, rsa_iterations: int = 10, rationality: float = 10, utility_beta: float = 10):
+    def __init__(self, env: GridEnvironment, rsa_iterations: int = 10, rationality: float = 10, utility_beta: float = 10, initial_prob: float = 0.5):
         self.env = env
         self.rsa_iterations = rsa_iterations
         self.alpha = rationality
         self.beta = utility_beta
         self.num_actions = env.action_space.n
-        self.internal_belief_map = np.full((env.grid_size, env.grid_size), 0.5)
+        self.internal_belief_map = np.full((env.grid_size, env.grid_size), initial_prob)
+        
 
         if env.agent_pos is not None:
             self.internal_belief_map[env.agent_pos] = 0.0
@@ -257,66 +258,19 @@ class Observer:
     An observer that only sees the agent's position and actions.
     It maintains its own belief map and updates it by inverting the agent's RSA model.
     """
-    def __init__(self, env: GridEnvironment, agent_params: dict):
+    def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.5, learning_rate: float = 0.3):
         self.env = env
         self.agent_params = agent_params
         self.num_actions = env.action_space.n
-        self.observer_belief_map = np.full((env.grid_size, env.grid_size), 0.5)
+        self.observer_belief_map = np.full((env.grid_size, env.grid_size), initial_prob)
         self.beta = agent_params.get('beta', 10)
         self.rsa_iterations = agent_params.get('rsa_iterations', 3)
+        self.learning_rate = learning_rate
 
         if env.agent_pos is not None:
             self.observer_belief_map[env.agent_pos] = 0.0
         if env.target_pos is not None:
             self.observer_belief_map[env.target_pos] = 0.0
-
-
-    def update_belief(self, agent_pos, target_pos, action) -> np.ndarray:
-        """
-        Infers the state of the world based on the agent's action and
-        returns a 3x3 probability map of the agent's local area.
-        """
-        # 1. Generate states based on the *observer's* current belief.
-        possible_states = _generate_possible_states(agent_pos, target_pos, self.observer_belief_map, self.env)
-        local_wall_probs = np.zeros((3, 3))
-
-        if not possible_states:
-            return local_wall_probs
-
-        num_local_states = len(possible_states)
-        prior = np.full(num_local_states, 1.0 / num_local_states)
-
-        # 2. Simulate the agent's reasoning process.
-        world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env)
-        P_S_k = self._run_rsa_reasoning_for_observer(world_utilities, num_local_states)
-
-        # 3. Invert the model to get the posterior over states.
-        with np.errstate(divide='ignore', invalid='ignore'):
-            L_numerator = P_S_k.T * prior
-            L_denominator = L_numerator.sum(axis=1, keepdims=True)
-            P_L_k = np.nan_to_num(L_numerator / L_denominator)
-
-        state_posterior = P_L_k[action, :]
-
-        # 4. Update the observer's global belief map and create the local probability map.
-        self.observer_belief_map[agent_pos] = 0.0 # Agent's location is not a wall.
-        local_wall_probs[1, 1] = 0.0
-
-        for r_local in range(3):
-            for c_local in range(3):
-                if r_local == 1 and c_local == 1: continue
-
-                r_global = agent_pos[0] + r_local - 1
-                c_global = agent_pos[1] + c_local - 1
-
-                if 0 <= r_global < self.env.grid_size and 0 <= c_global < self.env.grid_size:
-                    prob_wall = sum(state_posterior[i] for i, s in enumerate(possible_states) if s[r_local, c_local] == self.env._wall_cell)
-                    
-                    # Update both the global map and the local map to be returned
-                    self.observer_belief_map[r_global, c_global] = prob_wall
-                    local_wall_probs[r_local, c_local] = prob_wall
-
-        return local_wall_probs
 
     def _run_rsa_reasoning_for_observer(self, world_utilities, num_states):
         """Performs the RSA iterative calculation."""
@@ -334,6 +288,76 @@ class Observer:
                 S_denominator = exp_utility.sum(axis=1, keepdims=True)
                 P_S_k = np.nan_to_num(exp_utility / S_denominator)
         return P_S_k
+    
+    def _compute_local_belief(self, agent_pos, target_pos, action) -> np.ndarray:
+        """
+        Computes the inferred 3x3 local probability map based on the agent's action.
+        This is the core RSA reversal step.
+        """
+        possible_states = _generate_possible_states(agent_pos, target_pos, self.observer_belief_map, self.env)
+        local_wall_probs = np.zeros((3, 3))
+
+        if not possible_states:
+            return local_wall_probs
+
+        num_local_states = len(possible_states)
+        prior = np.full(num_local_states, 1.0 / num_local_states)
+
+        world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env)
+        P_S_k = self._run_rsa_reasoning_for_observer(world_utilities, num_local_states)
+
+        with np.errstate(divide='ignore', invalid='ignore'):
+            L_numerator = P_S_k.T * prior
+            L_denominator = L_numerator.sum(axis=1, keepdims=True)
+            P_L_k = np.nan_to_num(L_numerator / L_denominator)
+
+        state_posterior = P_L_k[action, :]
+
+        # Calculate the probability of a wall for each cell in the 3x3 view
+        for r_local in range(3):
+            for c_local in range(3):
+                prob_wall = sum(state_posterior[i] for i, s in enumerate(possible_states) if s[r_local, c_local] == self.env._wall_cell)
+                local_wall_probs[r_local, c_local] = prob_wall
+        
+        return local_wall_probs
+    
+    def _update_global_belief(self, local_wall_probs, agent_pos):
+        """
+        Updates the global belief map by moving its values toward the
+        newly inferred local beliefs, controlled by a learning rate.
+        """
+        self.observer_belief_map[agent_pos] = 0.0  # Agent's location is not a wall
+
+        for r_local in range(3):
+            for c_local in range(3):
+                if r_local == 1 and c_local == 1: continue
+
+                r_global = agent_pos[0] + r_local - 1
+                c_global = agent_pos[1] + c_local - 1
+
+                if 0 <= r_global < self.env.grid_size and 0 <= c_global < self.env.grid_size:
+                    local_prob = local_wall_probs[r_local, c_local]
+                    global_prob = self.observer_belief_map[r_global, c_global]
+                    
+                    # Move the global belief towards the local inference by the learning rate
+                    new_global_prob = global_prob + self.learning_rate * (local_prob - global_prob)
+                    self.observer_belief_map[r_global, c_global] = new_global_prob
+
+    def update_belief(self, agent_pos, target_pos, action) -> np.ndarray:
+        """
+        Orchestrates the two-step belief update process.
+        1. Infers local beliefs from the agent's action.
+        2. Updates the global belief map with the new local information.
+        Returns the inferred local probability map for visualization.
+        """
+        # Step 1: Compute the local belief based on the action
+        local_probs = self._compute_local_belief(agent_pos, target_pos, action)
+        
+        # Step 2: Update the global belief map using the local inference
+        self._update_global_belief(local_probs, agent_pos)
+
+        # Return the local probabilities for visualization purposes
+        return local_probs
 
     def render_belief(self, agent_pos, target_pos):
         """Renders the observer's belief map using a color gradient."""
@@ -360,12 +384,17 @@ if __name__ == '__main__':
         env = GridEnvironment(grid_map=custom_map, render_mode='human')
         obs, info = env.reset()
 
-        agent = RSAAgent(env)
+        # Calculate the true probability of a wall in the given map
+        num_walls = sum(row.count('#') for row in custom_map)
+        total_cells = env.grid_size * env.grid_size
+        true_wall_prob = num_walls / total_cells
+
+        agent = RSAAgent(env, initial_prob=true_wall_prob)
         observer = Observer(env, agent_params={
             'alpha': agent.alpha,
             'beta': agent.beta,
             'rsa_iterations': agent.rsa_iterations
-        })
+        }, initial_prob=true_wall_prob)
 
         max_steps = 100
         for step in range(max_steps):
@@ -433,6 +462,9 @@ if __name__ == '__main__':
         env.render()
 
         env.close()
+
+        print(f"True wall probability in the environment: {true_wall_prob:.2f}")
+        
     except Exception as e:
         print(f"\nAn error occurred: {e}")
         import traceback

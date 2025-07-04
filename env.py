@@ -39,7 +39,7 @@ class GridEnvironment(gym.Env):
 
         self.grid_map = grid_map
         if self.grid_map:
-            assert all(len(row) == len(self.grid_map) for row in self.grid_map), "Grid map must be square."
+            assert all(len(row) == len(self.grid_map) for row in self.grid_map), "Grid map must be square. Size = {}x{}".format(len(self.grid_map), len(self.grid_map[0]))
             self.grid_size = len(self.grid_map)
         else:
             self.grid_size = grid_size

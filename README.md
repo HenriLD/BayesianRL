@@ -10,7 +10,7 @@ This is where Rational Speech Act (RSA) reasoning comes into play. The observer 
 
 To get this running on your own machine, you'll first need to clone the repository and set up the necessary Python libraries.
 
-'''bash
+'''
 git clone https://github.com/henrild/bayesianrl.git
 cd bayesianrl
 pip install -r requirements.txt
@@ -19,13 +19,13 @@ pip install -r requirements.txt
 
 The main simulation can be kicked off by running the rsa_agent.py script. This will launch a visual simulation where you can see the agent navigating the grid, and side-by-side, you'll see the observer's evolving belief map, showing you what it infers about the hidden walls.
 
-'''bash
+'''
 python rsa_agent.py
 '''
 
 If you'd like to train the navigation model from scratch, you can use the train_heuristic.py script. This will train a new agent using several predefined map layouts and save the resulting model, which the RSA agent then uses as its foundation for decision-making.
 
-'''bash
+'''
 python train_heuristic.py
 '''
 

@@ -505,7 +505,7 @@ def run_simulation(params: dict):
         initial_prob=true_wall_prob,
         intelligent_sampling=observer_intelligent_sampling,
         learning_rate=observer_learning_rate,
-        sharpening_factor=sharpening_factor
+        sharpening_factor=sharpening_factor,
         num_samples=num_samples
     )
 

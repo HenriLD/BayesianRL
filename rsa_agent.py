@@ -23,33 +23,31 @@ def _chebyshev_distance(pos1, pos2):
     """Calculates Chebyshev distance (for grid with diagonal moves)."""
     return max(abs(pos1[0] - pos2[0]), abs(pos1[1] - pos2[1]))
 
-def _get_char_for_prob(prob, default_prob):
+def _get_char_for_prob(prob, default_prob, max_dev, min_dev):
     """
-    Maps a wall probability to a color, normalized against a default probability.
-    Changes are highlighted: cells with probability much higher than default are
-    bright white, and those much lower are dark black.
+    Maps a wall probability to a color, scaled relative to the highest and
+    lowest deviations from the default probability in the current belief map.
     """
-    # Epsilon to prevent division by zero if default_prob is 0.0 or 1.0
+    # Epsilon to prevent division by zero
     epsilon = 1e-9
+    current_dev = prob - default_prob
 
-    # If the probability is very close to the default, render as a neutral mid-gray
-    if abs(prob - default_prob) < 0.05:
-        # Index for 50% gray in the 24-shade ramp
+    # If the cell's deviation is negligible, render as a neutral mid-gray
+    if abs(current_dev) < 0.01:
         gray_index = 232 + round(0.5 * 23)
     
-    # If probability is higher than default, scale from mid-gray to bright white
-    elif prob > default_prob:
-        # Normalize the deviation from 0 to 1
-        normalized_dev = (prob - default_prob) / (1.0 - default_prob + epsilon)
-        # Map the normalized deviation to the upper half of the color scale
-        gray_index = 232 + round((0.5 + 0.5 * normalized_dev) * 23)
+    # If deviation is positive, scale from mid-gray to white
+    elif current_dev > 0:
+        # Normalize this cell's deviation relative to the max positive deviation
+        normalized_val = current_dev / (max_dev + epsilon)
+        gray_index = 232 + round((0.5 + 0.5 * normalized_val) * 23)
     
-    # If probability is lower than default, scale from mid-gray to dark black
-    else: # prob < default_prob
-        # Normalize the deviation from 0 to 1
-        normalized_dev = (default_prob - prob) / (default_prob + epsilon)
-        # Map the normalized deviation to the lower half of the color scale
-        gray_index = 232 + round((0.5 - 0.5 * normalized_dev) * 23)
+    # If deviation is negative, scale from mid-gray to black
+    else: # current_dev < 0
+        # Normalize this cell's deviation relative to the max negative deviation
+        # Note: neg / neg -> positive value
+        normalized_val = current_dev / (min_dev - epsilon)
+        gray_index = 232 + round((0.5 - 0.5 * normalized_val) * 23)
 
     # Ensure the final index is within the valid ANSI grayscale range
     gray_index = int(np.clip(gray_index, 232, 255))
@@ -61,7 +59,15 @@ def _get_char_for_prob(prob, default_prob):
 
 
 def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos, default_prob):
-    """Renders a belief map using 3-character strings to match the environment style."""
+    """
+    Renders a belief map, normalizing colors based on the maximum and minimum
+    deviations from the default probability in the current map.
+    """
+    # First, find the max/min deviations across the entire map for normalization
+    deviations = belief_map - default_prob
+    max_dev = deviations.max()
+    min_dev = deviations.min()
+
     grid_str = ""
     for r in range(grid_size):
         for c in range(grid_size):
@@ -72,8 +78,8 @@ def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos, 
                 grid_str += ' T '
             else:
                 prob = belief_map[r, c]
-                # Pass both the current and default probability
-                grid_str += _get_char_for_prob(prob, default_prob)
+                # Pass the full context, including max/min deviations, for rendering
+                grid_str += _get_char_for_prob(prob, default_prob, max_dev, min_dev)
         grid_str += "\n"
     print(grid_str)
 
@@ -465,7 +471,7 @@ class Observer:
 # --- Main execution block ---
 if __name__ == '__main__':
     try:
-        custom_map = [
+        """custom_map = [
             "#############",
             "#      #    #",
             "#  # T      #",
@@ -475,10 +481,26 @@ if __name__ == '__main__':
             "#  #       ##",
             "#  #   #   ##",
             "# #### ##  ##",
-            "#   A   #   #",
-            "#        #  #",
-            "#  #  #  #  #",
+            "#   #   #   #",
+            "#   #       #",
+            "#  ##A#  #  #",
             "#############",
+        ]"""
+        custom_map = [
+            "##############",
+            "#      #     #",
+            "#  ##T   #   #",
+            "#   ## # #   #",
+            "#      #     #",
+            "# # #        #",
+            "#   #   ### ##",
+            "## ## ##    ##",
+            "#           ##",
+            "# ####  ##  ##",
+            "#    #  # #  #",
+            "# ##    #    #",
+            "#A#  ####    #",
+            "##############",
         ]
 
         env = GridEnvironment(grid_map=custom_map, render_mode='human')

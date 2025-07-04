@@ -23,7 +23,7 @@ except ImportError:
 COLOR_RESET = "\x1b[0m"
 
 # Define the number of states to sample when the total number of possibilities is too large.
-NUM_STATE_SAMPLES = 20000
+NUM_STATE_SAMPLES = 50000
 VIEW_SIZE = 5
 
 def _get_char_for_prob(prob, default_prob, max_dev, min_dev):
@@ -86,7 +86,7 @@ def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos, 
         grid_str += "\n"
     print(grid_str)
 
-def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic_model, sharpening_factor=3.0):
+def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic_model, sharpening_factor=5.0):
     """
     Calculates action utilities using the value function of a trained RL agent.
     This version uses BATCH PROCESSING to significantly speed up inference.
@@ -150,7 +150,7 @@ def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic
 
         
 
-def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state_view=None, use_intelligent_sampling=False, unintelligent_prob=0.5):
+def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state_view=None, use_intelligent_sampling=False, unintelligent_prob=0.5, num_samples=NUM_STATE_SAMPLES):
     """
     Generates possible 5x5 local states based on a belief map.
     """
@@ -197,7 +197,7 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state
         uncertain_coords, uncertain_probs = zip(*uncertain_cells)
         uncertain_probs = np.array(uncertain_probs)
         
-        random_matrix = np.random.rand(NUM_STATE_SAMPLES, num_uncertain)
+        random_matrix = np.random.rand(num_samples, num_uncertain)
         
         if use_intelligent_sampling:
             is_wall_matrix = random_matrix < uncertain_probs
@@ -206,7 +206,7 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state
             
         cell_values = np.where(is_wall_matrix, env._wall_cell, env._empty_cell)
         
-        possible_states_np = np.tile(base_state, (NUM_STATE_SAMPLES, 1, 1))
+        possible_states_np = np.tile(base_state, (num_samples, 1, 1))
         
         rows, cols = zip(*uncertain_coords)
         possible_states_np[:, rows, cols] = cell_values
@@ -262,7 +262,7 @@ class RSAAgent:
     """
     An agent that uses its private 'internal_belief_map' to decide on an action.
     """
-    def __init__(self, env: GridEnvironment, rsa_iterations: int = 10, rationality: float = 1, utility_beta: float = 1, initial_prob: float = 0.3):
+    def __init__(self, env: GridEnvironment, rsa_iterations: int = 5, rationality: float = 10, utility_beta: float = 1, initial_prob: float = 0.25, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 5.0, num_samples: int = NUM_STATE_SAMPLES):
         self.env = env
         self.rsa_iterations = rsa_iterations
         self.alpha = rationality
@@ -270,6 +270,9 @@ class RSAAgent:
         self.num_actions = env.action_space.n
         self.internal_belief_map = np.full((env.grid_size, env.grid_size), initial_prob)
         self.default_prob = initial_prob
+        self.model_path = model_path
+        self.sharpening_factor = sharpening_factor
+        self.num_samples = num_samples
         
 
         if env.agent_pos is not None:
@@ -291,7 +294,7 @@ class RSAAgent:
         s_true = observation['local_view']
 
         possible_states = _generate_possible_states(
-            agent_pos, target_pos, self.internal_belief_map, self.env, true_state_view=s_true
+            agent_pos, target_pos, self.internal_belief_map, self.env, true_state_view=s_true, unintelligent_prob=self.default_prob, num_samples=self.num_samples,
         )
 
         s_true_idx = -1
@@ -303,7 +306,7 @@ class RSAAgent:
         assert s_true_idx != -1, "True state not found in generated states."
 
         # Calculate the world utilities for each possible state using the heuristic model
-        world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env, heuristic_model=self.heuristic_model)
+        world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env, heuristic_model=self.heuristic_model, sharpening_factor=self.sharpening_factor)
 
         # This is the agent's reasoning based on its private information
         P_S_k = self._run_rsa_reasoning(world_utilities, len(possible_states))
@@ -351,7 +354,7 @@ class Observer:
     An observer that only sees the agent's position and actions.
     It maintains its own belief map and updates it by inverting the agent's RSA model.
     """
-    def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.25, learning_rate: float = 0.25, intelligent_sampling: bool = False):
+    def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.25, learning_rate: float = 0.5, intelligent_sampling: bool = False, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 5.0, num_samples: int = NUM_STATE_SAMPLES):
         self.env = env
         self.beta = agent_params.get('beta', 10)
         self.rsa_iterations = agent_params.get('rsa_iterations', 3)
@@ -360,6 +363,9 @@ class Observer:
         self.observer_belief_map = np.full((env.grid_size, env.grid_size), initial_prob)
         self.view_radius = VIEW_SIZE // 2
         self.default_prob = initial_prob
+        self.model_path = model_path
+        self.sharpening_factor = sharpening_factor
+        self.num_samples = num_samples
 
         if env.agent_pos is not None:
             self.observer_belief_map[env.agent_pos] = 0.0
@@ -368,7 +374,7 @@ class Observer:
 
         # Load the trained heuristic model
         try:
-            self.heuristic_model = PPO.load(model_path, env=env)
+            self.heuristic_model = PPO.load(self.model_path, env=env)
         except Exception as e:
             print(f"Error loading heuristic model for observer: {e}")
             self.heuristic_model = None
@@ -389,7 +395,7 @@ class Observer:
         """Computes the inferred 5x5 local probability map based on the agent's action."""
         possible_states = _generate_possible_states(
             agent_pos, target_pos, self.observer_belief_map, self.env,
-            use_intelligent_sampling=self.intelligent_sampling
+            use_intelligent_sampling=self.intelligent_sampling, unintelligent_prob=self.default_prob, num_samples=self.num_samples
         )
         local_wall_probs = np.zeros((VIEW_SIZE, VIEW_SIZE))
 
@@ -399,7 +405,7 @@ class Observer:
         num_local_states = len(possible_states)
         prior = np.full(num_local_states, 1.0 / num_local_states)
 
-        world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env, heuristic_model=self.heuristic_model)
+        world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env, heuristic_model=self.heuristic_model, sharpening_factor=self.sharpening_factor)
         P_S_k = self._run_rsa_reasoning_for_observer(world_utilities, num_local_states)
 
         with np.errstate(divide='ignore', invalid='ignore'):
@@ -446,29 +452,134 @@ class Observer:
         _render_belief_map_with_chars(self.observer_belief_map, self.env.grid_size, agent_pos, target_pos, self.default_prob)
 
 
+
 # --- Main execution block ---
+
+def run_simulation(params: dict):
+    """
+    Runs a single simulation episode with a given set of parameters.
+
+    Args:
+        params (dict): A dictionary containing all hyperparameters.
+    
+    Returns:
+        dict: A dictionary containing key metrics from the simulation.
+    """
+    # Extract hyperparameters from the params dictionary
+    custom_map = params["custom_map"]
+    model_path = params["model_path"]
+    rsa_iterations = params.get("rsa_iterations", 10)
+    agent_rationality = params.get("agent_rationality", 10)
+    agent_utility_beta = params.get("agent_utility_beta", 1)
+    sharpening_factor = params.get("sharpening_factor", 5.0)
+    observer_learning_rate = params.get("observer_learning_rate", 0.33)
+    observer_intelligent_sampling = params.get("observer_intelligent_sampling", False)
+    max_steps = params.get("max_steps", 100)
+    render = params.get("render", True)
+    time_delay = params.get("time_delay", 0.3)
+    num_samples = params.get("num_samples", NUM_STATE_SAMPLES)
+    
+    render_mode = 'human' if render else None
+    env = GridEnvironment(grid_map=custom_map, render_mode=render_mode)
+    obs, info = env.reset()
+
+    num_walls = sum(row.count('#') for row in custom_map)
+    total_cells = env.grid_size * env.grid_size
+    true_wall_prob = num_walls / total_cells
+
+    agent = RSAAgent(
+        env,
+        model_path=model_path,
+        rsa_iterations=rsa_iterations,
+        initial_prob=true_wall_prob,
+        rationality=agent_rationality,
+        utility_beta=agent_utility_beta,
+        sharpening_factor=sharpening_factor,
+        num_samples=num_samples
+    )
+    
+    observer = Observer(
+        env,
+        model_path=model_path,
+        agent_params={'beta': agent.beta, 'rsa_iterations': agent.rsa_iterations},
+        initial_prob=true_wall_prob,
+        intelligent_sampling=observer_intelligent_sampling,
+        learning_rate=observer_learning_rate,
+        sharpening_factor=sharpening_factor
+        num_samples=num_samples
+    )
+
+    for step in range(max_steps):
+        agent.update_internal_belief(obs)
+        agent_pos, target_pos = tuple(obs['agent_pos']), tuple(obs['target_pos'])
+
+        if render:
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print(f"--- Step {step + 1} ---")
+
+        action, action_probs = agent.choose_action(obs)
+        local_probs = observer.update_belief(agent_pos, target_pos, action)
+        
+        if render:
+            render_side_by_side_views(local_probs, obs['local_view'], env)
+            print("Observer's Inferred Belief Map (Shading indicates wall probability):")
+            observer.render_belief(agent_pos, target_pos)
+            
+            action_map = {0: "Up", 1: "Down", 2: "Left", 3: "Right", 4: "Up-Left", 5: "Up-Right", 6: "Down-Left", 7: "Down-Right"}
+            print(f"\nAction Probabilities: {[f'{p:.2f}' for p in action_probs]}")
+            print(f"Chosen Action: {action_map[action]}")
+
+        new_obs, reward, terminated, truncated, info = env.step(action)
+        
+        if render:
+            print("\nActual Environment State:")
+            env.render()
+        
+        obs = new_obs
+        
+        if render:
+            time.sleep(time_delay)
+
+        if terminated or truncated:
+            if render:
+                end_reason = "Target reached" if terminated else "Max steps reached"
+                print(f"\nEpisode finished: {end_reason} in {step + 1} steps.")
+            break
+    else:
+         if render:
+             print("\nEpisode finished without reaching target.")
+
+    final_agent_pos, final_target_pos = obs['agent_pos'], obs['target_pos']
+    if render:
+        print("\n" + "="*40 + "\n---           EPISODE END          ---\n" + "="*40 + "\n")
+        print("Observer's Final Inferred Belief Map:")
+        observer.render_belief(final_agent_pos, final_target_pos)
+        print("\nAgent's Final Internal Belief Map (Ground Truth):")
+        agent.render_internal_belief(final_agent_pos, final_target_pos)
+        print("\nFinal Actual Environment State:")
+        env.render()
+    
+    env.close()
+
+    # Calculate final mean squared error between belief maps
+    final_mse = np.mean((agent.internal_belief_map - observer.observer_belief_map)**2)
+    
+    metrics = {
+        "steps_taken": step + 1,
+        "target_reached": terminated,
+        "final_mse": final_mse
+    }
+    return metrics
+
 if __name__ == '__main__':
-    try:
-        import torch
-        """custom_map = [
-            "#############",
-            "#      #    #",
-            "#  # T      #",
-            "#  ####  #  #",
-            "#  #     #  #",
-            "#      ### ##",
-            "#  #       ##",
-            "#  #   #   ##",
-            "# #### ##  ##",
-            "#   #   #   #",
-            "#   #       #",
-            "#  ##A#  #  #",
-            "#############",
-        ]"""
-        custom_map = [
+    # Define default hyperparameters in a dictionary for a single run.
+    # To perform a hyperparameter search, you can create a loop
+    # that calls run_simulation with different parameter dicts.
+    default_params = {
+        "custom_map": [
             "##############",
-            "#      #     #",
-            "# T##    #   #",
+            "#     T#     #",
+            "#  ##    #   #",
             "#   ## # #   #",
             "#      #     #",
             "# # #        #",
@@ -478,73 +589,33 @@ if __name__ == '__main__':
             "# ####  ##  ##",
             "#    #  # #  #",
             "# ##    #    #",
-            "# # A####    #",
+            "#A#  ####    #",
             "##############",
-        ]
-
-        env = GridEnvironment(grid_map=custom_map, render_mode='human')
-        obs, info = env.reset()
-
-        # Calculate the true probability of a wall in the given map
-        num_walls = sum(row.count('#') for row in custom_map)
-        total_cells = env.grid_size * env.grid_size
-        true_wall_prob = num_walls / total_cells
-
-        model_path = "heuristic_agent.zip"
+        ],
+        "model_path": "heuristic_agent.zip",
+        "rsa_iterations": 10,
+        "agent_rationality": 10,
+        "agent_utility_beta": 1,
+        "sharpening_factor": 5.0,
+        "observer_learning_rate": 0.33,
+        "observer_intelligent_sampling": False,
+        "max_steps": 100,
+        "render": True,
+        "time_delay": 0.3,
+        "num_samples": 50000
+    }
+    
+    try:
+        results = run_simulation(default_params)
+        print("\n" + "="*40)
+        print("---       SIMULATION COMPLETE      ---")
+        print("="*40)
+        print(f"  Target Reached: {results['target_reached']}")
+        print(f"  Steps Taken:    {results['steps_taken']}")
+        print(f"  Final Belief MSE: {results['final_mse']:.4f}")
+        print("="*40)
         
-        # By default, intelligent_sampling is False.
-        # To enable, set intelligent_sampling=True in the constructors below.
-
-        agent = RSAAgent(env, rsa_iterations=10, initial_prob=true_wall_prob)
-        observer = Observer(env, agent_params={
-            'beta': agent.beta, 'rsa_iterations': agent.rsa_iterations
-        }, initial_prob=true_wall_prob, intelligent_sampling=False, learning_rate=0.25)
-
-        max_steps = 100
-        for step in range(max_steps):
-            agent.update_internal_belief(obs)
-
-            os.system('cls' if os.name == 'nt' else 'clear')
-            print(f"--- Step {step + 1} ---")
-
-            agent_pos, target_pos = tuple(obs['agent_pos']), tuple(obs['target_pos'])
-
-            action, action_probs = agent.choose_action(obs)
-            local_probs = observer.update_belief(agent_pos, target_pos, action)
-            render_side_by_side_views(local_probs, obs['local_view'], env)
-            
-            print("Observer's Inferred Belief Map (Shading indicates wall probability):")
-            observer.render_belief(agent_pos, target_pos)
-            
-            action_map = {0: "Up", 1: "Down", 2: "Left", 3: "Right", 4: "Up-Left", 5: "Up-Right", 6: "Down-Left", 7: "Down-Right"}
-            print(f"\nAction Probabilities: {[f'{p:.2f}' for p in action_probs]}")
-            print(f"Chosen Action: {action_map[action]}")
-
-            new_obs, reward, terminated, truncated, info = env.step(action)
-
-            print("\nActual Environment State:")
-            env.render()
-            obs = new_obs
-            time.sleep(0.3)
-
-            if terminated or truncated:
-                end_reason = "Target reached" if terminated else "Max steps reached"
-                print(f"\nEpisode finished: {end_reason} in {step + 1} steps.")
-                break
-        else:
-             print("\nEpisode finished without reaching target.")
-
-        print("\n" + "="*40 + "\n---           EPISODE END          ---\n" + "="*40 + "\n")
-        final_agent_pos, final_target_pos = obs['agent_pos'], obs['target_pos']
-        print("Observer's Final Inferred Belief Map:")
-        observer.render_belief(final_agent_pos, final_target_pos)
-        print("\nAgent's Final Internal Belief Map (Ground Truth):")
-        agent.render_internal_belief(final_agent_pos, final_target_pos)
-        print("\nFinal Actual Environment State:")
-        env.render()
-        env.close()
-
     except Exception as e:
-        print(f"\nAn error occurred: {e}")
+        print(f"\nAn error occurred during simulation: {e}")
         import traceback
         traceback.print_exc()

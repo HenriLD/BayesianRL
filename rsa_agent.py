@@ -800,7 +800,7 @@ if __name__ == '__main__':
         "max_steps": 20,
         "render": True,
         "time_delay": 0.1,
-        "num_samples": 5000, # Number of samples for generating possible states
+        "num_samples": 50000, # Number of samples for generating possible states
         "num_iterations": 5, # Number of agent respawns
         "randomize_agent_after_goal": True, # Respawn the agent in a random cell
         "randomize_target_after_goal": True, # Respawn the target in a random cell

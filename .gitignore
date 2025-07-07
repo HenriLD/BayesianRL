@@ -1,12 +1,3 @@
-# Ignore everything
-*
-
-# Except these files
-!rsa_agent.py
-!train_heuristic.py
-!env.py
-!heuristic_agent.zip
-!requirements.txt
-!.gitignore
-!base_agent.py
-!README.md
+.conda
+__pycache__
+Figure_1.png

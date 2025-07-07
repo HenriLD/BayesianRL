@@ -4,6 +4,8 @@ import time
 import os
 import torch
 import random
+from collections import deque
+from scipy.stats import entropy
 
 try:
     from env import GridEnvironment
@@ -20,8 +22,10 @@ except ImportError:
     exit()
 
 
-# --- ANSI Color Constants for Rendering ---
+#Color Constants for Rendering
 COLOR_RESET = "\x1b[0m"
+
+random.seed(42)  # For reproducibility
 
 # Define the number of states to sample when the total number of possibilities is too large.
 NUM_STATE_SAMPLES = 50000
@@ -263,7 +267,7 @@ class RSAAgent:
     """
     An agent that uses its private 'internal_belief_map' to decide on an action.
     """
-    def __init__(self, env: GridEnvironment, rsa_iterations: int = 5, rationality: float = 10, utility_beta: float = 1, initial_prob: float = 0.25, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 1.0, num_samples: int = NUM_STATE_SAMPLES):
+    def __init__(self, env: GridEnvironment, rsa_iterations: int = 5, rationality: float = 1, utility_beta: float = 1, initial_prob: float = 0.25, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 1.0, num_samples: int = NUM_STATE_SAMPLES, convergence_threshold: float = 0.001):
         self.env = env
         self.rsa_iterations = rsa_iterations
         self.alpha = rationality
@@ -274,6 +278,8 @@ class RSAAgent:
         self.model_path = model_path
         self.sharpening_factor = sharpening_factor
         self.num_samples = num_samples
+        self.convergence_threshold = convergence_threshold
+        self.position_history = deque(maxlen=4)
         
 
         if env.agent_pos is not None:
@@ -310,26 +316,71 @@ class RSAAgent:
         world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env, heuristic_model=self.heuristic_model, sharpening_factor=self.sharpening_factor)
 
         # This is the agent's reasoning based on its private information
-        P_S_k = self._run_rsa_reasoning(world_utilities, len(possible_states))
+        P_S_k = self._run_rsa_reasoning(world_utilities)
 
         final_action_probs = P_S_k[s_true_idx, :]
-        max_prob = np.max(final_action_probs)
-        best_action_indices = np.where(final_action_probs == max_prob)[0]
-        action = np.random.choice(best_action_indices)
 
-        return int(action), final_action_probs
+        # Cycle-breaking logic
+        sorted_actions = np.argsort(final_action_probs)[::-1]
+        
+        action_moves = {
+            0: (-1, 0), 1: (1, 0), 2: (0, -1), 3: (0, 1),
+            4: (-1, -1), 5: (-1, 1), 6: (1, -1), 7: (1, 1)
+        }
 
-    def _run_rsa_reasoning(self, world_utilities, num_states):
-        """Performs the RSA iterative calculation."""
+        chosen_action = sorted_actions[0] # Default to best action
+        for action in sorted_actions:
+            move = action_moves.get(action)
+            if move:
+                next_pos = (agent_pos[0] + move[0], agent_pos[1] + move[1])
+                # Check if the potential next move is in the recent history
+                if next_pos not in self.position_history:
+                    chosen_action = action
+                    break # Found a non-cyclic move
+
+        return int(chosen_action), final_action_probs
+
+    def _run_rsa_reasoning(self, world_utilities):
+        """
+        Performs the alternating speaker-listener RSA calculation.
+        """
+        # S_0: Initialize with a "literal speaker" that acts based on raw utilities.
+        # This speaker model computes P(action | state).
         with np.errstate(divide='ignore', invalid='ignore'):
             exp_utilities = np.exp(self.beta * world_utilities)
-            P_S0 = np.nan_to_num(exp_utilities / exp_utilities.sum(axis=1, keepdims=True))
+            speaker_probs = np.nan_to_num(exp_utilities / exp_utilities.sum(axis=1, keepdims=True), posinf=0)
 
-        P_S_k = P_S0
+        # Iteratively refine the speaker and listener models.
         for _ in range(self.rsa_iterations):
+            prev_speaker_probs = speaker_probs.copy()
+            # L_k: Listener model infers P(state | action).
+            # It assumes a uniform prior over states, so P(s|a) is proportional to P(a|s).
+            # We normalize over states for each action.
             with np.errstate(divide='ignore', invalid='ignore'):
-                P_S_k = np.nan_to_num(np.exp(world_utilities) / np.exp(world_utilities).sum(axis=1, keepdims=True))
-        return P_S_k
+                # The sum is over states (axis 0).
+                listener_probs = speaker_probs / speaker_probs.sum(axis=0, keepdims=True)
+                listener_probs = np.nan_to_num(listener_probs)
+
+            # S_k: Speaker model updates based on the listener's (in)ability to understand.
+            # The speaker's utility for an action is how likely the listener is to infer the correct state.
+            with np.errstate(divide='ignore'): # Ignore log(0) warnings.
+                log_listener_probs = np.log(listener_probs)
+
+            # The new utility combines the pragmatic utility (from the listener) and the original RL utility.
+            # The 'alpha' parameter controls the weight of the pragmatic reasoning.
+            combined_utility = (self.alpha * log_listener_probs) + (self.beta * world_utilities)
+
+            # The new speaker model is a softmax over the combined utilities.
+            with np.errstate(divide='ignore', invalid='ignore'):
+                exp_combined = np.exp(combined_utility)
+                speaker_probs = np.nan_to_num(exp_combined / exp_combined.sum(axis=1, keepdims=True), posinf=0)
+
+            # Convergence check
+            if np.allclose(speaker_probs, prev_speaker_probs, atol=self.convergence_threshold):
+                # print(f"Agent converged at iteration {i+1}") # Optional: for debugging
+                break
+        
+        return speaker_probs
 
     def update_internal_belief(self, observation):
         """Updates the agent's private belief map with ground truth from its 5x5 view."""
@@ -355,9 +406,10 @@ class Observer:
     An observer that only sees the agent's position and actions.
     It maintains its own belief map and updates it by inverting the agent's RSA model.
     """
-    def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.25, learning_rate: float = 0.5, intelligent_sampling: bool = False, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 5.0, num_samples: int = NUM_STATE_SAMPLES):
+    def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.25, learning_rate: float = 0.5, intelligent_sampling: bool = False, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 5.0, num_samples: int = NUM_STATE_SAMPLES, confidence=False):
         self.env = env
-        self.beta = agent_params.get('beta', 10)
+        self.alpha = agent_params.get('rationality', 1)
+        self.beta = agent_params.get('beta', 1)
         self.rsa_iterations = agent_params.get('rsa_iterations', 3)
         self.learning_rate = learning_rate
         self.intelligent_sampling = intelligent_sampling
@@ -367,6 +419,8 @@ class Observer:
         self.model_path = model_path
         self.sharpening_factor = sharpening_factor
         self.num_samples = num_samples
+        self.convergence_threshold = agent_params.get('convergence_threshold', 0.001)
+        self.confidence = confidence
 
         if env.agent_pos is not None:
             self.observer_belief_map[env.agent_pos] = 0.0
@@ -380,17 +434,40 @@ class Observer:
             print(f"Error loading heuristic model for observer: {e}")
             self.heuristic_model = None
 
-    def _run_rsa_reasoning_for_observer(self, world_utilities, num_states):
-        """Performs the RSA iterative calculation."""
+    def _run_rsa_reasoning_for_observer(self, world_utilities):
+        """
+        Performs the alternating speaker-listener RSA calculation to model the agent, with a convergence check.
+        """
+        # S_0: Initialize with a "literal speaker" that acts based on raw utilities.
         with np.errstate(divide='ignore', invalid='ignore'):
             exp_utilities = np.exp(self.beta * world_utilities)
-            P_S0 = np.nan_to_num(exp_utilities / exp_utilities.sum(axis=1, keepdims=True))
+            speaker_probs = np.nan_to_num(exp_utilities / exp_utilities.sum(axis=1, keepdims=True), posinf=0)
 
-        P_S_k = P_S0
-        for _ in range(self.rsa_iterations):
+        # Iteratively refine the speaker and listener models.
+        for i in range(self.rsa_iterations):
+            prev_speaker_probs = speaker_probs.copy()
+
+            # L_k: Listener model infers P(state | action).
             with np.errstate(divide='ignore', invalid='ignore'):
-                P_S_k = np.nan_to_num(np.exp(world_utilities) / np.exp(world_utilities).sum(axis=1, keepdims=True))
-        return P_S_k
+                listener_probs = speaker_probs / speaker_probs.sum(axis=0, keepdims=True)
+                listener_probs = np.nan_to_num(listener_probs)
+
+            # S_k: Speaker model updates based on the listener's understanding.
+            with np.errstate(divide='ignore'):
+                log_listener_probs = np.log(listener_probs)
+            
+            combined_utility = (self.alpha * log_listener_probs) + (self.beta * world_utilities)
+            
+            with np.errstate(divide='ignore', invalid='ignore'):
+                exp_combined = np.exp(combined_utility)
+                speaker_probs = np.nan_to_num(exp_combined / exp_combined.sum(axis=1, keepdims=True), posinf=0)
+
+            # Convergence check
+            if np.allclose(speaker_probs, prev_speaker_probs, atol=self.convergence_threshold):
+                # print(f"Observer converged at iteration {i+1}") # Optional: for debugging
+                break
+        
+        return speaker_probs
     
     def _compute_local_belief(self, agent_pos, target_pos, action) -> np.ndarray:
         """Computes the inferred 5x5 local probability map based on the agent's action."""
@@ -404,28 +481,47 @@ class Observer:
             return local_wall_probs
 
         num_local_states = len(possible_states)
-        prior = np.full(num_local_states, 1.0 / num_local_states)
+        # The observer's prior over the possible states, assumed uniform.
+        prior_state_prob = np.full(num_local_states, 1.0 / num_local_states)
 
         world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env, heuristic_model=self.heuristic_model, sharpening_factor=self.sharpening_factor)
-        P_S_k = self._run_rsa_reasoning_for_observer(world_utilities, num_local_states)
+        
+        # The observer runs RSA to model the agent's final action probabilities, P(action | state)
+        final_speaker_probs = self._run_rsa_reasoning_for_observer(world_utilities)
 
-        with np.errstate(divide='ignore', invalid='ignore'):
-            L_numerator = P_S_k.T * prior
-            P_L_k = np.nan_to_num(L_numerator / L_numerator.sum(axis=1, keepdims=True))
+        # Now, the observer becomes a listener, inverting the model to find P(state | action).
+        # P(state | action) is proportional to P(action | state) * P(state)
+        likelihood = final_speaker_probs[:, action]
+        posterior = likelihood * prior_state_prob
+        
+        posterior_sum = posterior.sum()
+        if posterior_sum > 1e-9:
+            state_posterior = posterior / posterior_sum
+        else:
+            state_posterior = prior_state_prob # Fallback to prior if action was impossible under all states
 
-        state_posterior = P_L_k[action, :]
+        # Calculate the entropy of the posterior. Add a small epsilon to avoid log(0).
+        posterior_entropy = entropy(state_posterior + 1e-9)
+        
+        # Normalize the entropy to get a confidence score between 0 and 1.
+        # Max entropy occurs for a uniform distribution.
+        max_entropy = np.log(num_local_states) if num_local_states > 1 else 1.0
+        # Confidence is 1 - normalized_entropy
+        confidence = 1.0 - (posterior_entropy / max_entropy)
 
+        # Calculate the probability of a wall at each local position by marginalizing over states
         for r_local in range(VIEW_SIZE):
             for c_local in range(VIEW_SIZE):
                 prob_wall = sum(state_posterior[i] for i, s in enumerate(possible_states) if s[r_local, c_local] == self.env._wall_cell)
                 local_wall_probs[r_local, c_local] = prob_wall
         
-        return local_wall_probs
+        return local_wall_probs, confidence
     
-    def _update_global_belief(self, local_wall_probs, agent_pos):
+    def _update_global_belief(self, local_wall_probs, agent_pos, confidence):
         """Updates the global belief map using the newly inferred local beliefs."""
         self.observer_belief_map[agent_pos] = 0.0
         
+        self.learning_rate *= confidence  # Scale learning rate by confidence
 
         for r_local in range(VIEW_SIZE):
             for c_local in range(VIEW_SIZE):
@@ -444,8 +540,10 @@ class Observer:
 
     def update_belief(self, agent_pos, target_pos, action) -> np.ndarray:
         """Orchestrates the two-step belief update process."""
-        local_probs = self._compute_local_belief(agent_pos, target_pos, action)
-        self._update_global_belief(local_probs, agent_pos)
+        local_probs, confidence = self._compute_local_belief(agent_pos, target_pos, action)
+        if not self.confidence:
+            confidence = 1
+        self._update_global_belief(local_probs, agent_pos, confidence)
         return local_probs
 
     def render_belief(self, agent_pos, target_pos):
@@ -483,6 +581,8 @@ def run_simulation(params: dict):
     randomize_agent_after_goal = params.get("randomize_agent_after_goal", True)
     randomize_target_after_goal = params.get("randomize_target_after_goal", False)
     randomize_initial_placement = params.get("randomize_initial_placement", False)
+    convergence_threshold = params.get("convergence_threshold", 0.001)
+    confidence = params.get("confidence", False)
 
     # --- Randomize Initial Agent/Target Placement ---
     
@@ -528,7 +628,8 @@ def run_simulation(params: dict):
         rationality=agent_rationality,
         utility_beta=agent_utility_beta,
         sharpening_factor=sharpening_factor,
-        num_samples=num_samples
+        num_samples=num_samples,
+        convergence_threshold=convergence_threshold
     )
     
     observer = Observer(
@@ -539,7 +640,8 @@ def run_simulation(params: dict):
         intelligent_sampling=observer_intelligent_sampling,
         learning_rate=observer_learning_rate,
         sharpening_factor=sharpening_factor,
-        num_samples=num_samples
+        num_samples=num_samples,
+        confidence=confidence
     )
 
     total_steps_taken = 0
@@ -685,7 +787,7 @@ if __name__ == '__main__':
         ],
         "model_path": "heuristic_agent.zip",
         "rsa_iterations": 10,
-        "agent_rationality": 10,
+        "agent_rationality": 1,
         "agent_utility_beta": 1,
         "sharpening_factor": 1.0,
         "observer_learning_rate": 0.30,
@@ -693,11 +795,13 @@ if __name__ == '__main__':
         "max_steps": 20,
         "render": True,
         "time_delay": 0.1,
-        "num_samples": 1000,
-        "num_iterations": 50,
+        "num_samples": 5000,
+        "num_iterations": 5,
         "randomize_agent_after_goal": True,
         "randomize_target_after_goal": True,
-        "randomize_initial_placement": False
+        "randomize_initial_placement": False,
+        "convergence_threshold": 0.001,
+        "confidence": True
     }
     
     try:

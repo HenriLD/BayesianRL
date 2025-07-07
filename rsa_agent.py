@@ -267,7 +267,9 @@ class RSAAgent:
     """
     An agent that uses its private 'internal_belief_map' to decide on an action.
     """
-    def __init__(self, env: GridEnvironment, rsa_iterations: int = 5, rationality: float = 1, utility_beta: float = 1, initial_prob: float = 0.25, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 1.0, num_samples: int = NUM_STATE_SAMPLES, convergence_threshold: float = 0.001):
+    def __init__(self, env: GridEnvironment, rsa_iterations: int = 5, rationality: float = 1, utility_beta: float = 1, 
+                 initial_prob: float = 0.25, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 1.0, 
+                 num_samples: int = NUM_STATE_SAMPLES, convergence_threshold: float = 0.001, max_cycle: int = 0):   
         self.env = env
         self.rsa_iterations = rsa_iterations
         self.alpha = rationality
@@ -279,7 +281,7 @@ class RSAAgent:
         self.sharpening_factor = sharpening_factor
         self.num_samples = num_samples
         self.convergence_threshold = convergence_threshold
-        self.position_history = deque(maxlen=4)
+        self.position_history = deque(maxlen=max_cycle)
         
 
         if env.agent_pos is not None:
@@ -328,15 +330,15 @@ class RSAAgent:
             4: (-1, -1), 5: (-1, 1), 6: (1, -1), 7: (1, 1)
         }
 
-        chosen_action = sorted_actions[0] # Default to best action
+        chosen_action = None
         for action in sorted_actions:
             move = action_moves.get(action)
             if move:
                 next_pos = (agent_pos[0] + move[0], agent_pos[1] + move[1])
-                # Check if the potential next move is in the recent history
                 if next_pos not in self.position_history:
                     chosen_action = action
-                    break # Found a non-cyclic move
+                    self.position_history.append(next_pos)
+                    break # Found the best non-cyclic move
 
         return int(chosen_action), final_action_probs
 
@@ -508,6 +510,7 @@ class Observer:
         max_entropy = np.log(num_local_states) if num_local_states > 1 else 1.0
         # Confidence is 1 - normalized_entropy
         confidence = 1.0 - (posterior_entropy / max_entropy)
+        print("Confidence Score " + str(confidence))
 
         # Calculate the probability of a wall at each local position by marginalizing over states
         for r_local in range(VIEW_SIZE):
@@ -521,7 +524,7 @@ class Observer:
         """Updates the global belief map using the newly inferred local beliefs."""
         self.observer_belief_map[agent_pos] = 0.0
         
-        self.learning_rate *= confidence  # Scale learning rate by confidence
+        self.learning_rate *= 5 * confidence  # Scale learning rate by confidence
 
         for r_local in range(VIEW_SIZE):
             for c_local in range(VIEW_SIZE):
@@ -540,10 +543,10 @@ class Observer:
 
     def update_belief(self, agent_pos, target_pos, action) -> np.ndarray:
         """Orchestrates the two-step belief update process."""
-        local_probs, confidence = self._compute_local_belief(agent_pos, target_pos, action)
+        local_probs, conf = self._compute_local_belief(agent_pos, target_pos, action)
         if not self.confidence:
-            confidence = 1
-        self._update_global_belief(local_probs, agent_pos, confidence)
+            conf = 1
+        self._update_global_belief(local_probs, agent_pos, conf)
         return local_probs
 
     def render_belief(self, agent_pos, target_pos):
@@ -571,7 +574,7 @@ def run_simulation(params: dict):
     agent_rationality = params.get("agent_rationality", 10)
     agent_utility_beta = params.get("agent_utility_beta", 1)
     sharpening_factor = params.get("sharpening_factor", 5.0)
-    observer_learning_rate = params.get("observer_learning_rate", 0.33)
+    observer_learning_rate = params.get("observer_learning_rate", 1)
     observer_intelligent_sampling = params.get("observer_intelligent_sampling", False)
     max_steps = params.get("max_steps", 100)
     render = params.get("render", True)
@@ -583,6 +586,7 @@ def run_simulation(params: dict):
     randomize_initial_placement = params.get("randomize_initial_placement", False)
     convergence_threshold = params.get("convergence_threshold", 0.001)
     confidence = params.get("confidence", False)
+    max_cycle = params.get("max_cycle", 0)
 
     # --- Randomize Initial Agent/Target Placement ---
     
@@ -629,7 +633,8 @@ def run_simulation(params: dict):
         utility_beta=agent_utility_beta,
         sharpening_factor=sharpening_factor,
         num_samples=num_samples,
-        convergence_threshold=convergence_threshold
+        convergence_threshold=convergence_threshold,
+        max_cycle=max_cycle
     )
     
     observer = Observer(
@@ -787,21 +792,22 @@ if __name__ == '__main__':
         ],
         "model_path": "heuristic_agent.zip",
         "rsa_iterations": 10,
-        "agent_rationality": 1,
-        "agent_utility_beta": 1,
-        "sharpening_factor": 1.0,
-        "observer_learning_rate": 0.30,
-        "observer_intelligent_sampling": False,
+        "agent_rationality": 1.0,
+        "agent_utility_beta": 1.0,
+        "sharpening_factor": 1.0, # Factor to sharpen the heuristic model's predictions (make it more confident)
+        "observer_learning_rate": 1.0,
+        "observer_intelligent_sampling": False, 
         "max_steps": 20,
         "render": True,
         "time_delay": 0.1,
-        "num_samples": 5000,
-        "num_iterations": 5,
-        "randomize_agent_after_goal": True,
-        "randomize_target_after_goal": True,
-        "randomize_initial_placement": False,
-        "convergence_threshold": 0.001,
-        "confidence": True
+        "num_samples": 5000, # Number of samples for generating possible states
+        "num_iterations": 5, # Number of agent respawns
+        "randomize_agent_after_goal": True, # Respawn the agent in a random cell
+        "randomize_target_after_goal": True, # Respawn the target in a random cell
+        "randomize_initial_placement": False, # Will use fixed positions in the custom map if set to False
+        "convergence_threshold": 0.001, # Convergence threshold for RSA iterations
+        "confidence": True, # Whether to use confidence in observer updates
+        "max_cycle": 0  # Length of the anti-cycling memory, set to 0 for no cycle-breaking
     }
     
     try:

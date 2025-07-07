@@ -23,7 +23,7 @@ class GridEnvironment(gym.Env):
     """
     metadata = {'render_modes': ['human', 'ansi'], 'render_fps': 4}
 
-    def __init__(self, grid_map: list[str] = None, grid_size: int = 30, wall_percentage: float = 0.2, render_mode: str = 'human'):
+    def __init__(self, grid_map: list[str] = None, grid_size: int = 30, wall_percentage: float = 0.2, render_mode: str = 'human', max_steps: int = 50):
         """
         Initializes the Grid Environment.
 
@@ -66,7 +66,7 @@ class GridEnvironment(gym.Env):
         self.agent_pos = None
         self.target_pos = None
         self.walls = []
-        self._max_steps = self.grid_size * self.grid_size 
+        self._max_steps = max_steps 
         self._current_step = 0
 
         # Grid cell values for representation
@@ -171,6 +171,62 @@ class GridEnvironment(gym.Env):
         info = {}
 
         return observation, reward, terminated, truncated, info
+    
+    def respawn_agent(self):
+        """
+        Respawns the agent at a random empty location, without changing walls or target.
+        Returns the new observation and a 'done' flag if no respawn is possible.
+        """
+        # Set the old agent position to be an empty cell
+        if self.agent_pos is not None:
+            self.grid[self.agent_pos] = self._empty_cell
+
+        # Find all possible spawn points (empty cells)
+        empty_indices = np.argwhere(self.grid == self._empty_cell)
+        
+        if len(empty_indices) == 0:
+            # No empty cells left to spawn the agent, end the simulation.
+            return self._get_observation(), True # No new observation, but signal to terminate.
+
+        # Choose a new random position from the empty cells
+        new_pos_idx = self.np_random.choice(len(empty_indices))
+        new_pos = tuple(empty_indices[new_pos_idx])
+
+        # Update agent's position
+        self.agent_pos = new_pos
+        self.grid[self.agent_pos] = self._agent_cell
+        
+        # Reset step counter for this "life"
+        self._current_step = 0
+
+        return self._get_observation(), False
+    
+    def respawn_target(self):
+        """
+        Respawns the target at a random empty location.
+        Returns the new observation.
+        """
+        # Set the old target position to be an empty cell
+        if self.target_pos is not None:
+            self.grid[self.target_pos] = self._empty_cell
+
+        # Find all possible spawn points (empty cells)
+        empty_indices = np.argwhere(self.grid == self._empty_cell)
+        
+        if len(empty_indices) == 0:
+            # If no space, put the target back where it was and return
+            self.grid[self.target_pos] = self._target_cell
+            return self._get_observation()
+
+        # Choose a new random position from the empty cells
+        new_pos_idx = self.np_random.choice(len(empty_indices))
+        new_pos = tuple(empty_indices[new_pos_idx])
+
+        # Update target's position
+        self.target_pos = new_pos
+        self.grid[self.target_pos] = self._target_cell
+        
+        return self._get_observation()
 
     def render(self):
         """Renders the environment."""

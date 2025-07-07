@@ -3,6 +3,7 @@ import itertools
 import time
 import os
 import torch
+import random
 
 try:
     from env import GridEnvironment
@@ -262,7 +263,7 @@ class RSAAgent:
     """
     An agent that uses its private 'internal_belief_map' to decide on an action.
     """
-    def __init__(self, env: GridEnvironment, rsa_iterations: int = 5, rationality: float = 10, utility_beta: float = 1, initial_prob: float = 0.25, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 5.0, num_samples: int = NUM_STATE_SAMPLES):
+    def __init__(self, env: GridEnvironment, rsa_iterations: int = 5, rationality: float = 10, utility_beta: float = 1, initial_prob: float = 0.25, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 1.0, num_samples: int = NUM_STATE_SAMPLES):
         self.env = env
         self.rsa_iterations = rsa_iterations
         self.alpha = rationality
@@ -478,9 +479,41 @@ def run_simulation(params: dict):
     render = params.get("render", True)
     time_delay = params.get("time_delay", 0.3)
     num_samples = params.get("num_samples", NUM_STATE_SAMPLES)
+    num_iterations = params.get("num_iterations", 1)
+    randomize_agent_after_goal = params.get("randomize_agent_after_goal", True)
+    randomize_target_after_goal = params.get("randomize_target_after_goal", False)
+    randomize_initial_placement = params.get("randomize_initial_placement", False)
+
+    # --- Randomize Initial Agent/Target Placement ---
+    
+    map_template = [list(row) for row in custom_map]
+    valid_spawn_points = []
+
+    if randomize_initial_placement:
+    # Find all empty spaces (' '), agent start ('A'), and target ('T')
+        for r, row in enumerate(map_template):
+            for c, char in enumerate(row):
+                if char in [' ', 'A', 'T']:
+                    valid_spawn_points.append((r, c))
+                    # Clear original A and T to make them valid spawn points
+                    if char in ['A', 'T']:
+                        map_template[r][c] = ' '
+
+        if len(valid_spawn_points) < 2:
+            raise ValueError("Map must have at least two empty spaces for agent and target.")
+
+        # Choose two distinct random positions for the first agent and target
+        agent_start_pos, target_start_pos = random.sample(valid_spawn_points, 2)
+        
+        # Place them in the map
+        map_template[agent_start_pos[0]][agent_start_pos[1]] = 'A'
+        map_template[target_start_pos[0]][target_start_pos[1]] = 'T'
+        
+    # Convert back to list of strings
+    final_map = ["".join(row) for row in map_template]
     
     render_mode = 'human' if render else None
-    env = GridEnvironment(grid_map=custom_map, render_mode=render_mode)
+    env = GridEnvironment(grid_map=final_map, render_mode=render_mode, max_steps=max_steps)
     obs, info = env.reset()
 
     num_walls = sum(row.count('#') for row in custom_map)
@@ -509,49 +542,107 @@ def run_simulation(params: dict):
         num_samples=num_samples
     )
 
-    for step in range(max_steps):
-        agent.update_internal_belief(obs)
-        agent_pos, target_pos = tuple(obs['agent_pos']), tuple(obs['target_pos'])
+    total_steps_taken = 0
+    goals_reached = 0
+    observer_belief_history = []
 
+    for iteration in range(num_iterations):
+        done = False
         if render:
             os.system('cls' if os.name == 'nt' else 'clear')
-            print(f"--- Step {step + 1} ---")
+            print(f"--- Iteration {iteration + 1} / {num_iterations} ---")
+            print(f"Goals reached so far: {goals_reached}")
+            time.sleep(1.0)
 
-        action, action_probs = agent.choose_action(obs)
-        local_probs = observer.update_belief(agent_pos, target_pos, action)
-        
-        if render:
-            render_side_by_side_views(local_probs, obs['local_view'], env)
-            print("Observer's Inferred Belief Map (Shading indicates wall probability):")
-            observer.render_belief(agent_pos, target_pos)
-            
-            action_map = {0: "Up", 1: "Down", 2: "Left", 3: "Right", 4: "Up-Left", 5: "Up-Right", 6: "Down-Left", 7: "Down-Right"}
-            print(f"\nAction Probabilities: {[f'{p:.2f}' for p in action_probs]}")
-            print(f"Chosen Action: {action_map[action]}")
+        for step in range(max_steps):
+            agent.update_internal_belief(obs)
+            agent_pos, target_pos = tuple(obs['agent_pos']), tuple(obs['target_pos'])
 
-        new_obs, reward, terminated, truncated, info = env.step(action)
-        
-        if render:
-            print("\nActual Environment State:")
-            env.render()
-        
-        obs = new_obs
-        
-        if render:
-            time.sleep(time_delay)
-
-        if terminated or truncated:
             if render:
-                end_reason = "Target reached" if terminated else "Max steps reached"
-                print(f"\nEpisode finished: {end_reason} in {step + 1} steps.")
+                os.system('cls' if os.name == 'nt' else 'clear')
+                print(f"--- Iteration {iteration + 1} / {num_iterations} | Step {step + 1} ---")
+
+            action, action_probs = agent.choose_action(obs)
+            local_probs = observer.update_belief(agent_pos, target_pos, action)
+            
+            if render:
+                render_side_by_side_views(local_probs, obs['local_view'], env)
+                print("Observer's Inferred Belief Map (Shading indicates wall probability):")
+                observer.render_belief(agent_pos, target_pos)
+                
+                action_map = {0: "Up", 1: "Down", 2: "Left", 3: "Right", 4: "Up-Left", 5: "Up-Right", 6: "Down-Left", 7: "Down-Right"}
+                print(f"\nAction Probabilities: {[f'{p:.2f}' for p in action_probs]}")
+                print(f"Chosen Action: {action_map[action]}")
+
+            new_obs, reward, terminated, truncated, info = env.step(action)
+            total_steps_taken += 1
+            
+            if render:
+                print("\nActual Environment State:")
+                env.render()
+            
+            obs = new_obs
+            
+            if render:
+                time.sleep(time_delay)
+
+            if terminated or truncated:
+
+                if terminated:
+                    goals_reached += 1
+
+                if render:
+                    print(f"\nEpisode finished: Target reached in {step + 1} steps.")
+                
+                # If not the last iteration, handle respawning based on toggles
+                if iteration < num_iterations - 1:
+                    respawned = False
+                    if randomize_target_after_goal:
+                        obs = env.respawn_target()
+                        if render: print("Target has respawned.")
+                        respawned = True
+                    
+                    if randomize_agent_after_goal:
+                        new_obs, done = env.respawn_agent()
+                        if done:
+                            if render: print("No space left to respawn. Ending simulation.")
+                            break 
+                        obs = new_obs
+                        if render: print("Agent has respawned.")
+                        respawned = True
+
+                    if render and respawned:
+                        time.sleep(1)
+                
+                # Break from the inner step loop to start the next iteration
+                break
+
+            if truncated:
+                if render:
+                    end_reason = "Max steps reached"
+                    print(f"\nEpisode finished: {end_reason} in {step + 1} steps.")
+                # Break from inner loop to start next iteration
+                break
+        
+        # Store the observer's belief map and the current agent/target positions at the end of the iteration
+        observer_belief_history.append((observer.observer_belief_map.copy(), obs['agent_pos'], obs['target_pos']))
+
+        if done:
             break
-    else:
-         if render:
-             print("\nEpisode finished without reaching target.")
 
     final_agent_pos, final_target_pos = obs['agent_pos'], obs['target_pos']
+    
+    # --- Final Printouts ---
     if render:
-        print("\n" + "="*40 + "\n---           EPISODE END          ---\n" + "="*40 + "\n")
+        os.system('cls' if os.name == 'nt' else 'clear')
+        print("\n" + "="*40 + "\n---      Observer Belief History     ---\n" + "="*40 + "\n")
+        for i, (belief_map, agent_p, target_p) in enumerate(observer_belief_history):
+            print(f"--- Belief Map After Iteration {i + 1} ---")
+            _render_belief_map_with_chars(belief_map, env.grid_size, agent_p, target_p, observer.default_prob)
+            print("\n")
+            time.sleep(1)
+
+        print("\n" + "="*40 + "\n---           FINAL STATE          ---\n" + "="*40 + "\n")
         print("Observer's Final Inferred Belief Map:")
         observer.render_belief(final_agent_pos, final_target_pos)
         print("\nAgent's Final Internal Belief Map (Ground Truth):")
@@ -565,8 +656,8 @@ def run_simulation(params: dict):
     final_mse = np.mean((agent.internal_belief_map - observer.observer_belief_map)**2)
     
     metrics = {
-        "steps_taken": step + 1,
-        "target_reached": terminated,
+        "total_steps_taken": total_steps_taken,
+        "goals_reached": goals_reached,
         "final_mse": final_mse
     }
     return metrics
@@ -596,13 +687,17 @@ if __name__ == '__main__':
         "rsa_iterations": 10,
         "agent_rationality": 10,
         "agent_utility_beta": 1,
-        "sharpening_factor": 5.0,
-        "observer_learning_rate": 0.33,
+        "sharpening_factor": 1.0,
+        "observer_learning_rate": 0.30,
         "observer_intelligent_sampling": False,
-        "max_steps": 100,
+        "max_steps": 20,
         "render": True,
-        "time_delay": 0.3,
-        "num_samples": 50000
+        "time_delay": 0.1,
+        "num_samples": 1000,
+        "num_iterations": 50,
+        "randomize_agent_after_goal": True,
+        "randomize_target_after_goal": True,
+        "randomize_initial_placement": False
     }
     
     try:
@@ -610,8 +705,7 @@ if __name__ == '__main__':
         print("\n" + "="*40)
         print("---       SIMULATION COMPLETE      ---")
         print("="*40)
-        print(f"  Target Reached: {results['target_reached']}")
-        print(f"  Steps Taken:    {results['steps_taken']}")
+        print(f"  Goals Reached:  {results['goals_reached']} / {default_params['num_iterations']}")
         print(f"  Final Belief MSE: {results['final_mse']:.4f}")
         print("="*40)
         

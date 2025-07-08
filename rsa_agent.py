@@ -292,7 +292,7 @@ class RSAAgent:
         # Load the trained heuristic model
         try:
             self.heuristic_model = PPO.load(model_path, env=env)
-            print("Heuristic model loaded successfully.")
+            # print("Heuristic model loaded successfully.")
         except Exception as e:
             print(f"Error loading heuristic model: {e}")
             self.heuristic_model = None

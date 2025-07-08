@@ -1,5 +1,9 @@
 import os
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+import logging
+logging.getLogger('stable_baselines3').setLevel(logging.WARNING)
 
 import itertools
 import pandas as pd
@@ -9,6 +13,7 @@ from rsa_agent import run_simulation
 import matplotlib.pyplot as plt
 from datetime import datetime
 import multiprocessing
+import tqdm
 
 # This function takes a single 'params' dict and is used by the multiprocessing Pool.
 def run_simulation_wrapper(params):
@@ -78,12 +83,11 @@ def perform_grid_search():
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
 
     results_history = []
-    best_mse = float('inf')
-    best_params = None
 
-    num_runs = 50
+    num_runs = 128
     # Create a list of all runs to be executed.
     all_runs_params = [params for params in param_combinations for _ in range(num_runs)]
+    total_simulations = len(all_runs_params)
 
     print(f"Starting hyperparameter grid search with {len(param_combinations)} combinations...")
 
@@ -91,7 +95,10 @@ def perform_grid_search():
     with multiprocessing.Pool(processes=os.cpu_count()) as pool:
         # 'map' will distribute the 'all_runs_params' list to the 'run_simulation_wrapper' function
         # across the available CPU cores. It blocks until all results are ready.
-        results_history = pool.map(run_simulation_wrapper, all_runs_params)
+        pbar = tqdm(pool.imap_unordered(run_simulation_wrapper, all_runs_params), total=total_simulations)
+        for result in pbar:
+            if result:
+                results_history.append(result)
 
     results_history = [r for r in results_history if r is not None] # Filter out any None results due to exceptions
 

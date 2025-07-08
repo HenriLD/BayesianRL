@@ -2,9 +2,6 @@ import os
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
-import logging
-logging.getLogger('stable_baselines3').setLevel(logging.WARNING)
-
 import itertools
 import pandas as pd
 import seaborn as sns
@@ -41,10 +38,10 @@ def perform_grid_search():
     """
     # Define the grid of hyperparameters to search.
     param_grid = {
-        "rsa_iterations": [50],
+        "rsa_iterations": [1, 5, 10, 50],
         "agent_rationality": [5.0], # How rational the agent is in its decision-making (useless for now)
         "agent_utility_beta": [2.0], #tradeoff between exploration and exploitation
-        "sharpening_factor": [1.0, 2.0, 5.0, 10.0],
+        "sharpening_factor": [3.0], # How much the agent sharpens its beliefs, 3 is a good default value
         "observer_learning_rate": [0.5], # 0.5 is a good default value for the observer's learning rate
         "num_samples": [1000],
         "convergence_threshold": [0.01],
@@ -95,7 +92,7 @@ def perform_grid_search():
     with multiprocessing.Pool(processes=os.cpu_count()) as pool:
         # 'map' will distribute the 'all_runs_params' list to the 'run_simulation_wrapper' function
         # across the available CPU cores. It blocks until all results are ready.
-        pbar = tqdm(pool.imap_unordered(run_simulation_wrapper, all_runs_params), total=total_simulations)
+        pbar = tqdm.tqdm(pool.imap_unordered(run_simulation_wrapper, all_runs_params), total=total_simulations)
         for result in pbar:
             if result:
                 results_history.append(result)

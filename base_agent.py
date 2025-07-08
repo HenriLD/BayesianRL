@@ -3,12 +3,15 @@ import itertools
 import time
 import os
 import torch
+import random
+from collections import deque
+from scipy.spatial.distance import jensenshannon
 
 try:
     from env import GridEnvironment
 except ImportError:
     print("Error: Could not import GridEnvironment.")
-    print("Please ensure the GridEnvironment class is in 'env.py'.")
+    print("Please ensure the updated GridEnvironment class is in 'env.py'.")
     exit()
 
 try:
@@ -19,11 +22,13 @@ except ImportError:
     exit()
 
 
-# --- ANSI Color Constants for Rendering ---
+#Color Constants for Rendering
 COLOR_RESET = "\x1b[0m"
 
+random.seed(42)  # For reproducibility
+
 # Define the number of states to sample when the total number of possibilities is too large.
-NUM_STATE_SAMPLES = 20000
+NUM_STATE_SAMPLES = 50000
 VIEW_SIZE = 5
 
 def _get_char_for_prob(prob, default_prob, max_dev, min_dev):
@@ -48,11 +53,13 @@ def _get_char_for_prob(prob, default_prob, max_dev, min_dev):
     # If deviation is negative, scale from mid-gray to black
     else: # current_dev < 0
         # Normalize this cell's deviation relative to the max negative deviation
+        # Note: neg / neg -> positive value
         normalized_val = current_dev / (min_dev - epsilon)
         gray_index = 232 + round((0.5 - 0.5 * normalized_val) * 23)
 
     # Ensure the final index is within the valid ANSI grayscale range
     gray_index = int(np.clip(gray_index, 232, 255))
+
     color_code = f"\x1b[38;5;{gray_index}m"
     block = "███"
 
@@ -64,6 +71,7 @@ def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos, 
     Renders a belief map, normalizing colors based on the maximum and minimum
     deviations from the default probability in the current map.
     """
+    # First, find the max/min deviations across the entire map for normalization
     deviations = belief_map - default_prob
     max_dev = deviations.max()
     min_dev = deviations.min()
@@ -78,14 +86,14 @@ def _render_belief_map_with_chars(belief_map, grid_size, agent_pos, target_pos, 
                 grid_str += ' T '
             else:
                 prob = belief_map[r, c]
+                # Pass the full context, including max/min deviations, for rendering
                 grid_str += _get_char_for_prob(prob, default_prob, max_dev, min_dev)
         grid_str += "\n"
     print(grid_str)
 
-def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic_model, sharpening_factor=1.0):
+def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic_model, sharpening_factor=5.0):
     """
     Calculates action utilities using the value function of a trained RL agent.
-    This is used by the Observer to model the agent's decision-making process.
     This version uses BATCH PROCESSING to significantly speed up inference.
     """
     num_states = len(states)
@@ -99,16 +107,21 @@ def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic
     }
 
     for i, state_view in enumerate(states):
+        # --- Batch Preparation ---
+        # Instead of predicting one by one, we create a batch of all valid
+        # observations for the current hypothetical state.
         batch_obs_np = []
         valid_action_indices = []
 
         for action_idx in range(num_actions):
             move = action_moves[action_idx]
             
+            # Check if the move is into a wall within the hypothetical state
             local_next_pos = (view_radius + move[0], view_radius + move[1])
             if state_view[local_next_pos] == env._wall_cell:
                 continue
 
+            # If the action is valid, prepare its observation and add it to the batch
             next_agent_pos = (agent_pos[0] + move[0], agent_pos[1] + move[1])
             obs = {
                 'local_view': state_view.astype(np.int32),
@@ -118,18 +131,21 @@ def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic
             batch_obs_np.append(obs)
             valid_action_indices.append(action_idx)
 
+        # --- Batch Prediction ---
+        # If there are any valid actions, predict their values all at once.
         action_utilities = np.full(num_actions, -np.inf, dtype=float)
         if batch_obs_np:
-            # Ensure tensors are created on the same device as the model
-            device = heuristic_model.device
+            # Collate the list of dictionaries into a single dictionary of batches
             obs_tensor = {
-                key: torch.as_tensor(np.stack([obs[key] for obs in batch_obs_np]), device=device)
+                key: torch.as_tensor(np.stack([obs[key] for obs in batch_obs_np]))
                 for key in batch_obs_np[0]
             }
             
+            # Use the trained model's value function to predict all utilities in one go
             with torch.no_grad():
                 values = heuristic_model.policy.predict_values(obs_tensor)
             
+            # Distribute the results back to the corresponding action indices
             for j, action_idx in enumerate(valid_action_indices):
                 action_utilities[action_idx] = values[j].item() * sharpening_factor
             
@@ -137,10 +153,11 @@ def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic
 
     return all_utilities
 
-def _generate_possible_states(agent_pos, target_pos, belief_map, env, use_intelligent_sampling=False, unintelligent_prob=0.5):
+        
+
+def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state_view=None, use_intelligent_sampling=False, unintelligent_prob=0.5, num_samples=NUM_STATE_SAMPLES):
     """
     Generates possible 5x5 local states based on a belief map.
-    Used by the Observer to create hypotheses about the true state.
     """
     base_state = np.full((VIEW_SIZE, VIEW_SIZE), env._empty_cell)
     uncertain_cells = []
@@ -153,10 +170,12 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env, use_intell
             global_pos = (r_global, c_global)
 
             if global_pos == agent_pos:
-                base_state[r_local, c_local] = env._agent_cell
-            elif global_pos == target_pos:
+                base_state[r_local, c_local] = env._agent_cell if agent_pos != target_pos else env._target_cell
+                continue
+            if global_pos == target_pos:
                 base_state[r_local, c_local] = env._target_cell
-            elif not (0 <= r_global < env.grid_size and 0 <= c_global < env.grid_size):
+                continue
+            if not (0 <= r_global < env.grid_size and 0 <= c_global < env.grid_size):
                 base_state[r_local, c_local] = env._wall_cell
             else:
                 prob_wall = belief_map[r_global, c_global]
@@ -179,19 +198,31 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env, use_intell
             possible_states.append(new_state)
 
     elif num_uncertain > 10:
+        # --- Vectorized State Generation ---
         uncertain_coords, uncertain_probs = zip(*uncertain_cells)
         uncertain_probs = np.array(uncertain_probs)
-        random_matrix = np.random.rand(NUM_STATE_SAMPLES, num_uncertain)
         
-        is_wall_matrix = random_matrix < (uncertain_probs if use_intelligent_sampling else unintelligent_prob)
+        random_matrix = np.random.rand(num_samples, num_uncertain)
+        
+        if use_intelligent_sampling:
+            is_wall_matrix = random_matrix < uncertain_probs
+        else:
+            is_wall_matrix = random_matrix < unintelligent_prob
+            
         cell_values = np.where(is_wall_matrix, env._wall_cell, env._empty_cell)
         
-        possible_states_np = np.tile(base_state, (NUM_STATE_SAMPLES, 1, 1))
+        possible_states_np = np.tile(base_state, (num_samples, 1, 1))
+        
         rows, cols = zip(*uncertain_coords)
         possible_states_np[:, rows, cols] = cell_values
+        
         possible_states = [s for s in possible_states_np]
     else:
         possible_states.append(base_state)
+
+    if true_state_view is not None:
+        if not any(np.array_equal(s, true_state_view) for s in possible_states):
+            possible_states.append(true_state_view)
 
     return possible_states
 
@@ -206,14 +237,28 @@ def render_side_by_side_views(wall_probabilities, ground_truth_view, env):
     print(f"\n{header_left:^24}   |   {header_right:^24}")
     print(f"{'-'*24:^24}   |   {'-'*24:^24}")
 
+    # Map for rendering the ground truth characters
     truth_char_map = {
-        env._empty_cell: '.', env._wall_cell: '#',
-        env._agent_cell: 'A', env._target_cell: 'T'
+        env._empty_cell: '.',
+        env._wall_cell: '#',
+        env._agent_cell: 'A',
+        env._target_cell: 'T'
     }
 
     for r in range(VIEW_SIZE):
-        left_row_str = "".join([f" {int(prob * 100):>3d}% " for prob in wall_probabilities[r, :]])
-        right_row_str = "".join([f"  {truth_char_map.get(cell_val, '?')}   " for cell_val in ground_truth_view[r, :]])
+        # Build the left side (probabilities)
+        left_row_str = ""
+        for c in range(VIEW_SIZE):
+            prob = wall_probabilities[r, c]
+            left_row_str += f" {int(prob * 100):>3d}% "
+
+        # Build the right side (ground truth)
+        right_row_str = ""
+        for c in range(VIEW_SIZE):
+            cell_val = ground_truth_view[r, c]
+            char = truth_char_map.get(cell_val, '?')
+            right_row_str += f"  {char}   "
+        
         print(f"{left_row_str:^24}   |   {right_row_str:^24}")
     print()
 
@@ -223,11 +268,12 @@ class BaseAgent:
     An agent that uses a pre-trained policy to decide on an action.
     It acts based on its ground-truth local view, without RSA reasoning.
     """
-    def __init__(self, env: GridEnvironment, model_path: str, initial_prob: float = 0.3):
+    def __init__(self, env: GridEnvironment, model_path: str, initial_prob: float = 0.3, max_cycle: int = 0):
         self.env = env
         self.num_actions = env.action_space.n
         self.internal_belief_map = np.full((env.grid_size, env.grid_size), initial_prob)
         self.default_prob = initial_prob
+        self.position_history = deque(maxlen=max_cycle)
         
         if env.agent_pos is not None: self.internal_belief_map[env.agent_pos] = 0.0
         if env.target_pos is not None: self.internal_belief_map[env.target_pos] = 0.0
@@ -251,9 +297,33 @@ class BaseAgent:
         with torch.no_grad():
             dist = self.heuristic_model.policy.get_distribution(obs_tensor)
             probs = dist.distribution.probs.cpu().numpy().squeeze()
-            action = dist.sample().cpu().item()
+            
+        # Cycle-breaking logic
+        sorted_actions = np.argsort(probs)[::-1]
+        
+        action_moves = {
+            0: (-1, 0), 1: (1, 0), 2: (0, -1), 3: (0, 1),
+            4: (-1, -1), 5: (-1, 1), 6: (1, -1), 7: (1, 1)
+        }
+        
+        agent_pos = tuple(observation['agent_pos'])
+        chosen_action = None
+        for action in sorted_actions:
+            move = action_moves.get(action)
+            if move:
+                next_pos = (agent_pos[0] + move[0], agent_pos[1] + move[1])
+                if next_pos not in self.position_history:
+                    chosen_action = action
+                    self.position_history.append(next_pos)
+                    break # Found the best non-cyclic move
+        
+        # If all moves are cyclic, fallback to the best action
+        if chosen_action is None:
+            chosen_action = sorted_actions[0]
 
-        return int(action), probs.flatten()
+
+        return int(chosen_action), probs.flatten()
+
 
     def update_internal_belief(self, observation):
         """Updates the agent's private belief map with ground truth from its 5x5 view."""
@@ -279,7 +349,7 @@ class Observer:
     An observer that only sees the agent's actions and position.
     It maintains a belief map and updates it by inverting the agent's policy model.
     """
-    def __init__(self, env: GridEnvironment, model_path: str, policy_beta: float = 1.0, initial_prob: float = 0.25, learning_rate: float = 0.25, intelligent_sampling: bool = False):
+    def __init__(self, env: GridEnvironment, model_path: str, policy_beta: float = 1.0, initial_prob: float = 0.25, learning_rate: float = 0.25, intelligent_sampling: bool = False, sharpening_factor: float = 1.0, num_samples: int = NUM_STATE_SAMPLES, confidence: bool = False):
         self.env = env
         self.beta = policy_beta
         self.learning_rate = learning_rate
@@ -287,6 +357,12 @@ class Observer:
         self.observer_belief_map = np.full((env.grid_size, env.grid_size), initial_prob)
         self.view_radius = VIEW_SIZE // 2
         self.default_prob = initial_prob
+        self.model_path = model_path
+        self.sharpening_factor = sharpening_factor
+        self.num_samples = num_samples
+        self.confidence = confidence
+        self.confidence_scores = []
+
 
         if env.agent_pos is not None: self.observer_belief_map[env.agent_pos] = 0.0
         if env.target_pos is not None: self.observer_belief_map[env.target_pos] = 0.0
@@ -311,17 +387,17 @@ class Observer:
         """Computes the inferred 5x5 local probability map based on the agent's action."""
         possible_states = _generate_possible_states(
             agent_pos, target_pos, self.observer_belief_map, self.env,
-            use_intelligent_sampling=self.intelligent_sampling
+            use_intelligent_sampling=self.intelligent_sampling, unintelligent_prob=self.default_prob, num_samples=self.num_samples
         )
         local_wall_probs = np.zeros((VIEW_SIZE, VIEW_SIZE))
-
+        
         if not possible_states:
-            return local_wall_probs
+            return local_wall_probs, 1.0
 
         num_local_states = len(possible_states)
         prior = np.full(num_local_states, 1.0 / num_local_states)
 
-        world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env, heuristic_model=self.heuristic_model)
+        world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env, heuristic_model=self.heuristic_model, sharpening_factor=self.sharpening_factor)
         action_probs_given_state = self._get_action_probs_from_utilities(world_utilities)
 
         likelihood = action_probs_given_state[:, action]
@@ -329,36 +405,53 @@ class Observer:
         
         posterior_sum = posterior.sum()
         state_posterior = posterior / posterior_sum if posterior_sum > 0 else prior
-
-        for r_local in range(VIEW_SIZE):
-            for c_local in range(VIEW_SIZE):
-                prob_wall = sum(state_posterior[i] for i, s in enumerate(possible_states) if s[r_local, c_local] == self.env._wall_cell)
-                local_wall_probs[r_local, c_local] = prob_wall
         
-        return local_wall_probs
+        # Entropy and Confidence Calculation
+        log_posterior = np.log(state_posterior + 1e-9) # Add epsilon to avoid log(0)
+        posterior_entropy = -np.sum(state_posterior * log_posterior)
+        
+        max_entropy = np.log(num_local_states) if num_local_states > 1 else 1.0
+        confidence = 1.0 - (posterior_entropy / max_entropy)
+        confidence = np.clip(confidence, 0.0, 1.0)
+        self.confidence_scores.append(confidence)
+        
+        # Wall Probability Calculation
+        possible_states_np = np.array(possible_states)
+        is_wall_mask = (possible_states_np == self.env._wall_cell)
+        local_wall_probs = np.einsum('i,ijk->jk', state_posterior, is_wall_mask)
+        
+        return local_wall_probs, confidence
     
-    def _update_global_belief(self, local_wall_probs, agent_pos):
+    def _update_global_belief(self, local_wall_probs, agent_pos, confidence):
         """Updates the global belief map using the newly inferred local beliefs."""
         self.observer_belief_map[agent_pos] = 0.0
+
+        effective_learning_rate = self.learning_rate
+        if self.confidence:
+            effective_learning_rate *= (1 + 4 * confidence) # Scale learning rate: 1x at 0 confidence, 5x at 1 confidence
+
+        r_global_start = agent_pos[0] - self.view_radius
+        r_global_end = agent_pos[0] + self.view_radius + 1
+        c_global_start = agent_pos[1] - self.view_radius
+        c_global_end = agent_pos[1] + self.view_radius + 1
         
-        for r_local in range(VIEW_SIZE):
-            for c_local in range(VIEW_SIZE):
-                if r_local == self.view_radius and c_local == self.view_radius:
-                    continue
+        r_clip_start = max(0, r_global_start)
+        r_clip_end = min(self.env.grid_size, r_global_end)
+        c_clip_start = max(0, c_global_start)
+        c_clip_end = min(self.env.grid_size, c_global_end)
 
-                r_global = agent_pos[0] + r_local - self.view_radius
-                c_global = agent_pos[1] + c_local - self.view_radius
+        global_slice = self.observer_belief_map[r_clip_start:r_clip_end, c_clip_start:c_clip_end]
+        local_slice = local_wall_probs[r_clip_start - r_global_start : r_clip_end - r_global_start,
+                                    c_clip_start - c_global_start : c_clip_end - c_global_start]
 
-                if 0 <= r_global < self.env.grid_size and 0 <= c_global < self.env.grid_size:
-                    local_prob = local_wall_probs[r_local, c_local]
-                    global_prob = self.observer_belief_map[r_global, c_global]
-                    new_global_prob = global_prob + self.learning_rate * (local_prob - global_prob)
-                    self.observer_belief_map[r_global, c_global] = np.clip(new_global_prob, 0.0, 1.0)
+        new_global_prob = global_slice + effective_learning_rate * (local_slice - global_slice)
+        self.observer_belief_map[r_clip_start:r_clip_end, c_clip_start:c_clip_end] = np.clip(new_global_prob, 0.0, 1.0)
+
 
     def update_belief(self, agent_pos, target_pos, action) -> np.ndarray:
         """Orchestrates the two-step belief update process."""
-        local_probs = self._compute_local_belief(agent_pos, target_pos, action)
-        self._update_global_belief(local_probs, agent_pos)
+        local_probs, conf = self._compute_local_belief(agent_pos, target_pos, action)
+        self._update_global_belief(local_probs, agent_pos, conf)
         return local_probs
 
     def render_belief(self, agent_pos, target_pos):
@@ -366,12 +459,158 @@ class Observer:
         _render_belief_map_with_chars(self.observer_belief_map, self.env.grid_size, agent_pos, target_pos, self.default_prob)
 
 
+
 # --- Main execution block ---
+
+def run_simulation(params: dict):
+    """
+    Runs a single simulation episode with a given set of parameters.
+    """
+    custom_map = params["custom_map"]
+    model_path = params["model_path"]
+    sharpening_factor = params.get("sharpening_factor", 1.0)
+    observer_learning_rate = params.get("observer_learning_rate", 0.5)
+    observer_intelligent_sampling = params.get("observer_intelligent_sampling", False)
+    max_steps = params.get("max_steps", 100)
+    render = params.get("render", True)
+    time_delay = params.get("time_delay", 0.1)
+    num_samples = params.get("num_samples", NUM_STATE_SAMPLES)
+    num_iterations = params.get("num_iterations", 1)
+    randomize_agent_after_goal = params.get("randomize_agent_after_goal", True)
+    randomize_target_after_goal = params.get("randomize_target_after_goal", True)
+    randomize_initial_placement = params.get("randomize_initial_placement", False)
+    confidence = params.get("confidence", False)
+    max_cycle = params.get("max_cycle", 0)
+
+    # --- Initial Map Setup ---
+    map_template = [list(row) for row in custom_map]
+    if randomize_initial_placement:
+        valid_spawn_points = []
+        for r, row in enumerate(map_template):
+            for c, char in enumerate(row):
+                if char in [' ', 'A', 'T']:
+                    valid_spawn_points.append((r, c))
+                    if char in ['A', 'T']: map_template[r][c] = ' '
+        
+        if len(valid_spawn_points) < 2: raise ValueError("Not enough spawn points.")
+        
+        agent_start_pos, target_start_pos = random.sample(valid_spawn_points, 2)
+        map_template[agent_start_pos[0]][agent_start_pos[1]] = 'A'
+        map_template[target_start_pos[0]][target_start_pos[1]] = 'T'
+        
+    final_map = ["".join(row) for row in map_template]
+    
+    render_mode = 'human' if render else None
+    env = GridEnvironment(grid_map=final_map, render_mode=render_mode, max_steps=max_steps)
+    obs, info = env.reset()
+
+    num_walls = sum(row.count('#') for row in final_map)
+    total_cells = env.grid_size * env.grid_size
+    true_wall_prob = num_walls / total_cells
+
+    agent = BaseAgent(
+        env,
+        model_path=model_path,
+        initial_prob=true_wall_prob,
+        max_cycle=max_cycle
+    )
+    
+    observer = Observer(
+        env,
+        model_path=model_path,
+        policy_beta=params.get("agent_utility_beta"), # Using the agent's beta for the observer's model
+        initial_prob=true_wall_prob,
+        intelligent_sampling=observer_intelligent_sampling,
+        learning_rate=observer_learning_rate,
+        sharpening_factor=sharpening_factor,
+        num_samples=num_samples,
+        confidence=confidence
+    )
+
+    total_steps_taken = 0
+    goals_reached = 0
+
+    for iteration in range(num_iterations):
+        done = False
+        if render:
+            os.system('cls' if os.name == 'nt' else 'clear')
+            print(f"--- Iteration {iteration + 1} / {num_iterations} ---")
+            time.sleep(1.0)
+
+        for step in range(max_steps):
+            agent.update_internal_belief(obs)
+            agent_pos, target_pos = tuple(obs['agent_pos']), tuple(obs['target_pos'])
+
+            if render:
+                os.system('cls' if os.name == 'nt' else 'clear')
+                print(f"--- Iteration {iteration + 1} | Step {step + 1} ---")
+
+            action, action_probs = agent.choose_action(obs)
+            local_probs = observer.update_belief(agent_pos, target_pos, action)
+            
+            if render:
+                render_side_by_side_views(local_probs, obs['local_view'], env)
+                print("Observer's Inferred Belief Map:")
+                observer.render_belief(agent_pos, target_pos)
+                
+                action_map = {0: "Up", 1: "Down", 2: "Left", 3: "Right", 4: "Up-L", 5: "Up-R", 6: "Down-L", 7: "Down-R"}
+                print(f"\nAction Probabilities: {[f'{p:.2f}' for p in action_probs]}")
+                print(f"Chosen Action: {action_map.get(action, 'Unknown')}")
+
+            new_obs, reward, terminated, truncated, info = env.step(action)
+            total_steps_taken += 1
+            
+            if render:
+                print("\nActual Environment State:")
+                env.render()
+            
+            obs = new_obs
+            
+            if render:
+                time.sleep(time_delay)
+
+            if terminated or truncated:
+                if terminated:
+                    goals_reached += 1
+                
+                if iteration < num_iterations - 1:
+                    if randomize_target_after_goal: obs = env.respawn_target()
+                    if randomize_agent_after_goal: 
+                        new_obs, done = env.respawn_agent()
+                        if not done: obs = new_obs
+                break
+        if done: break
+
+    # --- Metrics Calculation ---
+    observed_mask = agent.internal_belief_map != true_wall_prob
+    agent_map_flat = agent.internal_belief_map[observed_mask]
+    observer_map_flat = observer.observer_belief_map[observed_mask]
+
+    final_mse = np.mean((agent_map_flat - observer_map_flat)**2) if agent_map_flat.size > 0 else 0
+    
+    agent_map_prob = agent_map_flat + 1e-9
+    observer_map_prob = observer_map_flat + 1e-9
+    final_js_divergence = jensenshannon(agent_map_prob, observer_map_prob, base=2) if agent_map_flat.size > 0 else 0
+
+    epsilon = 1e-9
+    observer_map_clipped = np.clip(observer_map_flat, epsilon, 1 - epsilon)
+    log_loss = - (agent_map_flat * np.log(observer_map_clipped) + (1 - agent_map_flat) * np.log(1 - observer_map_clipped))
+    final_log_loss = np.mean(log_loss) if agent_map_flat.size > 0 else 0
+
+    metrics = {
+        "total_steps_taken": total_steps_taken,
+        "goals_reached": goals_reached,
+        "final_mse": final_mse,
+        "final_js_divergence": final_js_divergence,
+        "final_log_loss": final_log_loss
+    }
+    return metrics
+
 if __name__ == '__main__':
-    try:
-        custom_map = [
+    default_params = {
+        "custom_map": [
             "##############",
-            "#      #    T#",
+            "#     T#     #",
             "#  ##    #   #",
             "#   ## # #   #",
             "#      #     #",
@@ -384,71 +623,36 @@ if __name__ == '__main__':
             "# ##    #    #",
             "#A#  ####    #",
             "##############",
-        ]
-
-        env = GridEnvironment(grid_map=custom_map, render_mode='human')
-        obs, info = env.reset()
-
-        num_walls = sum(row.count('#') for row in custom_map)
-        total_cells = env.grid_size * env.grid_size
-        true_wall_prob = num_walls / total_cells
-
-        model_path = "heuristic_agent.zip"
-        if not os.path.exists(model_path):
-            print(f"Error: Model file not found at '{model_path}'")
-            print("Please train a model first using a separate training script.")
-            exit()
-
-        agent = BaseAgent(env, model_path=model_path, initial_prob=true_wall_prob)
-        observer = Observer(env, model_path=model_path, policy_beta=10.0, 
-                            initial_prob=true_wall_prob, intelligent_sampling=False, 
-                            learning_rate=0.25)
-
-        max_steps = 100
-        for step in range(max_steps):
-            agent.update_internal_belief(obs)
-
-            os.system('cls' if os.name == 'nt' else 'clear')
-            print(f"--- Step {step + 1} ---")
-
-            agent_pos, target_pos = tuple(obs['agent_pos']), tuple(obs['target_pos'])
-
-            action, action_probs = agent.choose_action(obs)
-            local_probs = observer.update_belief(agent_pos, target_pos, action)
-            render_side_by_side_views(local_probs, obs['local_view'], env)
-            
-            print("Observer's Inferred Belief Map (Shading indicates wall probability):")
-            observer.render_belief(agent_pos, target_pos)
-            
-            action_map = {0: "Up", 1: "Down", 2: "Left", 3: "Right", 4: "Up-L", 5: "Up-R", 6: "Down-L", 7: "Down-R"}
-            print(f"\nAction Probabilities: {[f'{p:.2f}' for p in action_probs]}")
-            print(f"Chosen Action: {action_map.get(action, 'Unknown')}")
-
-            new_obs, reward, terminated, truncated, info = env.step(action)
-
-            print("\nActual Environment State:")
-            env.render()
-            obs = new_obs
-            time.sleep(0.3)
-
-            if terminated or truncated:
-                end_reason = "Target reached" if terminated else "Max steps reached"
-                print(f"\nEpisode finished: {end_reason} in {step + 1} steps.")
-                break
-        else:
-             print("\nEpisode finished without reaching target.")
-
-        print("\n" + "="*40 + "\n---           EPISODE END          ---\n" + "="*40 + "\n")
-        final_agent_pos, final_target_pos = obs['agent_pos'], obs['target_pos']
-        print("Observer's Final Inferred Belief Map:")
-        observer.render_belief(final_agent_pos, final_target_pos)
-        print("\nAgent's Final Internal Belief Map (Ground Truth):")
-        agent.render_internal_belief(final_agent_pos, final_target_pos)
-        print("\nFinal Actual Environment State:")
-        env.render()
-        env.close()
-
+        ],
+        "model_path": "heuristic_agent.zip",
+        "agent_utility_beta": 1.0, 
+        "sharpening_factor": 1.0, 
+        "observer_learning_rate": 0.5,
+        "observer_intelligent_sampling": False, 
+        "max_steps": 20,
+        "render": True,
+        "time_delay": 0.1,
+        "num_samples": 4000,
+        "num_iterations": 5,
+        "randomize_agent_after_goal": True,
+        "randomize_target_after_goal": True,
+        "randomize_initial_placement": False,
+        "confidence": True,
+        "max_cycle": 4 
+    }
+    
+    try:
+        results = run_simulation(default_params)
+        print("\n" + "="*40)
+        print("---       SIMULATION COMPLETE      ---")
+        print("="*40)
+        print(f"  Goals Reached:      {results['goals_reached']} / {default_params['num_iterations']}")
+        print(f"  Final MSE:          {results['final_mse']:.4f}")
+        print(f"  Final JS Divergence: {results['final_js_divergence']:.4f}")
+        print(f"  Final Log Loss:     {results['final_log_loss']:.4f}")
+        print("="*40)
+        
     except Exception as e:
-        print(f"\nAn error occurred: {e}")
+        print(f"\nAn error occurred during simulation: {e}")
         import traceback
         traceback.print_exc()

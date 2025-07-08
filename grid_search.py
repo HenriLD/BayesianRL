@@ -8,6 +8,27 @@ import numpy as np
 from rsa_agent import run_simulation
 import matplotlib.pyplot as plt
 from datetime import datetime
+import multiprocessing
+
+# This function takes a single 'params' dict and is used by the multiprocessing Pool.
+def run_simulation_wrapper(params):
+    """
+    Wrapper to call run_simulation with a single argument for use with multiprocessing.
+    """
+    try:
+        # Each run within a process gets a copy of the params and returns the results.
+        # This example assumes one run per combination for simplicity with multiprocessing.
+        # For multiple runs per combination, the logic would need to be adjusted here
+        # or in the main loop after collecting results.
+        results = run_simulation(params)
+        current_results = params.copy()
+        current_results.update(results)
+        return current_results
+    except Exception as e:
+        print(f"\nAn error occurred in a simulation process with params: {params}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 def perform_grid_search():
     """
@@ -18,7 +39,7 @@ def perform_grid_search():
         "rsa_iterations": [50],
         "agent_rationality": [5.0], # How rational the agent is in its decision-making (useless for now)
         "agent_utility_beta": [2.0], #tradeoff between exploration and exploitation
-        "sharpening_factor": [0.5, 1.0, 2.0],
+        "sharpening_factor": [1.0, 2.0, 5.0, 10.0],
         "observer_learning_rate": [0.5], # 0.5 is a good default value for the observer's learning rate
         "num_samples": [1000],
         "convergence_threshold": [0.01],
@@ -60,45 +81,19 @@ def perform_grid_search():
     best_mse = float('inf')
     best_params = None
 
-    num_runs = 10
+    num_runs = 50
+    # Create a list of all runs to be executed.
+    all_runs_params = [params for params in param_combinations for _ in range(num_runs)]
 
     print(f"Starting hyperparameter grid search with {len(param_combinations)} combinations...")
 
-    for i, params in enumerate(param_combinations):
-        print(f"\n--- Running Combination {i+1}/{len(param_combinations)} ---")
-        
-        try:
+    # Use a multiprocessing Pool to run simulations in parallel
+    with multiprocessing.Pool(processes=os.cpu_count()) as pool:
+        # 'map' will distribute the 'all_runs_params' list to the 'run_simulation_wrapper' function
+        # across the available CPU cores. It blocks until all results are ready.
+        results_history = pool.map(run_simulation_wrapper, all_runs_params)
 
-            for j in range(num_runs):
-                print(f"\n--- Combination {i+1}, Run {j+1}/{num_runs} ---")
-
-                results = run_simulation(params)
-                current_results = params.copy()
-                current_results.update(results)
-                results_history.append(current_results)
-            
-            
-            print(f"  Goals Reached:  {results['goals_reached']} / {params['num_iterations']}")
-            print(f"  Final Belief MSE: {results['final_mse']:.4f}")
-
-            # Check for best performing parameters
-            if results['final_mse'] < best_mse:
-                best_mse = results['final_mse']
-                best_params = params
-
-        except Exception as e:
-            print(f"\nAn error occurred during simulation with params: {params}")
-            import traceback
-            traceback.print_exc()
-
-    print("\n" + "="*40)
-    print("---  HYPERPARAMETER SEARCH COMPLETE  ---")
-    print("="*40)
-    print(f"Best Mean Squared Error: {best_mse:.4f}")
-    print("Best Parameters:")
-    print(best_params)
-    print("="*40)
-
+    results_history = [r for r in results_history if r is not None] # Filter out any None results due to exceptions
 
     if results_history:
         df = pd.DataFrame(results_history)

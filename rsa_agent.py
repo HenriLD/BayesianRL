@@ -27,6 +27,8 @@ COLOR_RESET = "\x1b[0m"
 
 random.seed(42)  # For reproducibility
 
+KMP_DUPLICATE_LIB_OK= True
+
 # Define the number of states to sample when the total number of possibilities is too large.
 NUM_STATE_SAMPLES = 50000
 VIEW_SIZE = 5
@@ -423,6 +425,7 @@ class Observer:
         self.num_samples = num_samples
         self.convergence_threshold = agent_params.get('convergence_threshold', 0.001)
         self.confidence = confidence
+        self.confidence_scores = []
 
         if env.agent_pos is not None:
             self.observer_belief_map[env.agent_pos] = 0.0
@@ -510,7 +513,9 @@ class Observer:
         max_entropy = np.log(num_local_states) if num_local_states > 1 else 1.0
         # Confidence is 1 - normalized_entropy
         confidence = 1.0 - (posterior_entropy / max_entropy)
-        print("Confidence Score " + str(confidence))
+        confidence = np.clip(confidence, 0.0, 1.0)
+        self.confidence_scores.append(confidence)
+        # print("Confidence Score " + str(confidence))
 
         # Calculate the probability of a wall at each local position by marginalizing over states
         for r_local in range(VIEW_SIZE):

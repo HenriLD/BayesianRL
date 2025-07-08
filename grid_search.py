@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import os
 from datetime import datetime
 
+KMP_DUPLICATE_LIB_OK= True
+
 def perform_grid_search():
     """
     Performs a hyperparameter grid search for the RSA simulation and visualizes the results.
@@ -18,9 +20,9 @@ def perform_grid_search():
         "agent_utility_beta": [2.0], #tradeoff between exploration and exploitation
         "sharpening_factor": [5.0],
         "observer_learning_rate": [0.25], #maybe doesnt matter
-        "num_samples": [500, 1000],
+        "num_samples": [1000],
         "convergence_threshold": [0.01],
-        "confidence": [True],
+        "confidence": [True, False],
         "max_cycle": [0],
         "custom_map": [
             [
@@ -44,10 +46,10 @@ def perform_grid_search():
         "max_steps": [20],
         "render": [False],  # Disable rendering for speed
         "time_delay": [0.0],
-        "num_iterations": [5],
+        "num_iterations": [3],
         "randomize_agent_after_goal": [True],
         "randomize_target_after_goal": [True],
-        "randomize_initial_placement": [False]
+        "randomize_initial_placement": [True]
     }
 
     # Create a list of all parameter combinations
@@ -58,18 +60,23 @@ def perform_grid_search():
     best_mse = float('inf')
     best_params = None
 
+    num_runs = 20
+
     print(f"Starting hyperparameter grid search with {len(param_combinations)} combinations...")
 
     for i, params in enumerate(param_combinations):
         print(f"\n--- Running Combination {i+1}/{len(param_combinations)} ---")
         
         try:
-            results = run_simulation(params)
+
+            for j in range(num_runs):
+                print(f"\n--- Combination {i+1}, Run {j+1}/{num_runs} ---")
+
+                results = run_simulation(params)
+                current_results = params.copy()
+                current_results.update(results)
+                results_history.append(current_results)
             
-            # Store results
-            current_results = params.copy()
-            current_results.update(results)
-            results_history.append(current_results)
             
             print(f"  Goals Reached:  {results['goals_reached']} / {params['num_iterations']}")
             print(f"  Final Belief MSE: {results['final_mse']:.4f}")

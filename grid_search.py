@@ -1,13 +1,13 @@
+import os
+os.environ['KMP_DUPLICATE_LIB_OK']='True'
+
 import itertools
 import pandas as pd
 import seaborn as sns
 import numpy as np
 from rsa_agent import run_simulation
 import matplotlib.pyplot as plt
-import os
 from datetime import datetime
-
-KMP_DUPLICATE_LIB_OK= True
 
 def perform_grid_search():
     """
@@ -19,10 +19,10 @@ def perform_grid_search():
         "agent_rationality": [5.0], # How rational the agent is in its decision-making (useless for now)
         "agent_utility_beta": [2.0], #tradeoff between exploration and exploitation
         "sharpening_factor": [5.0],
-        "observer_learning_rate": [0.25], #maybe doesnt matter
+        "observer_learning_rate": [0.5], # 0.5 is a good default value for the observer's learning rate
         "num_samples": [1000],
         "convergence_threshold": [0.01],
-        "confidence": [True, False],
+        "confidence": [True], # Improves performance a lot
         "max_cycle": [0],
         "custom_map": [
             [
@@ -60,7 +60,7 @@ def perform_grid_search():
     best_mse = float('inf')
     best_params = None
 
-    num_runs = 20
+    num_runs = 50
 
     print(f"Starting hyperparameter grid search with {len(param_combinations)} combinations...")
 
@@ -105,7 +105,7 @@ def perform_grid_search():
         
         # Create a unique filename with a timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results_filename = f"grid_search_results_{timestamp}.csv"
+        results_filename = f"results\grid_search_results_{timestamp}.csv"
         
         # Save to CSV
         df.to_csv(results_filename, index=False)

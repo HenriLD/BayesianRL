@@ -27,8 +27,6 @@ COLOR_RESET = "\x1b[0m"
 
 random.seed(42)  # For reproducibility
 
-KMP_DUPLICATE_LIB_OK= True
-
 # Define the number of states to sample when the total number of possibilities is too large.
 NUM_STATE_SAMPLES = 50000
 VIEW_SIZE = 5
@@ -480,22 +478,17 @@ class Observer:
             agent_pos, target_pos, self.observer_belief_map, self.env,
             use_intelligent_sampling=self.intelligent_sampling, unintelligent_prob=self.default_prob, num_samples=self.num_samples
         )
-        local_wall_probs = np.zeros((VIEW_SIZE, VIEW_SIZE))
-
+        
+        # If there are no uncertain states, no inference is needed.
         if not possible_states:
-            return local_wall_probs
+            return np.zeros((VIEW_SIZE, VIEW_SIZE)), 1.0
 
         num_local_states = len(possible_states)
-        # The observer's prior over the possible states, assumed uniform.
         prior_state_prob = np.full(num_local_states, 1.0 / num_local_states)
 
         world_utilities = _calculate_heuristic_utilities(agent_pos, target_pos, possible_states, self.env, heuristic_model=self.heuristic_model, sharpening_factor=self.sharpening_factor)
-        
-        # The observer runs RSA to model the agent's final action probabilities, P(action | state)
         final_speaker_probs = self._run_rsa_reasoning_for_observer(world_utilities)
 
-        # Now, the observer becomes a listener, inverting the model to find P(state | action).
-        # P(state | action) is proportional to P(action | state) * P(state)
         likelihood = final_speaker_probs[:, action]
         posterior = likelihood * prior_state_prob
         
@@ -503,25 +496,26 @@ class Observer:
         if posterior_sum > 1e-9:
             state_posterior = posterior / posterior_sum
         else:
-            state_posterior = prior_state_prob # Fallback to prior if action was impossible under all states
+            state_posterior = prior_state_prob
 
-        # Calculate the entropy of the posterior. Add a small epsilon to avoid log(0).
-        posterior_entropy = entropy(state_posterior + 1e-9)
+        # Entropy and Confidence Calculation
+        log_posterior = np.log2(state_posterior + 1e-9) # Add epsilon to avoid log(0)
+        posterior_entropy = -np.sum(state_posterior * log_posterior)
         
-        # Normalize the entropy to get a confidence score between 0 and 1.
-        # Max entropy occurs for a uniform distribution.
         max_entropy = np.log(num_local_states) if num_local_states > 1 else 1.0
-        # Confidence is 1 - normalized_entropy
         confidence = 1.0 - (posterior_entropy / max_entropy)
         confidence = np.clip(confidence, 0.0, 1.0)
         self.confidence_scores.append(confidence)
-        # print("Confidence Score " + str(confidence))
-
-        # Calculate the probability of a wall at each local position by marginalizing over states
-        for r_local in range(VIEW_SIZE):
-            for c_local in range(VIEW_SIZE):
-                prob_wall = sum(state_posterior[i] for i, s in enumerate(possible_states) if s[r_local, c_local] == self.env._wall_cell)
-                local_wall_probs[r_local, c_local] = prob_wall
+        
+        # Wall Probability Calculation
+        # Convert the list of states to a NumPy array for vectorized operations.
+        possible_states_np = np.array(possible_states)
+        
+        # Create a boolean mask where a cell is a wall.
+        is_wall_mask = (possible_states_np == self.env._wall_cell)
+        
+        # Use the posterior probabilities to weight the wall mask and sum over all states.
+        local_wall_probs = np.einsum('i,ijk->jk', state_posterior, is_wall_mask)
         
         return local_wall_probs, confidence
     
@@ -593,7 +587,7 @@ def run_simulation(params: dict):
     confidence = params.get("confidence", False)
     max_cycle = params.get("max_cycle", 0)
 
-    # --- Randomize Initial Agent/Target Placement ---
+    # Randomize Initial Agent/Target Placement
     
     map_template = [list(row) for row in custom_map]
     valid_spawn_points = []
@@ -805,7 +799,7 @@ if __name__ == '__main__':
         "max_steps": 20,
         "render": True,
         "time_delay": 0.1,
-        "num_samples": 50000, # Number of samples for generating possible states
+        "num_samples": 10000, # Number of samples for generating possible states
         "num_iterations": 5, # Number of agent respawns
         "randomize_agent_after_goal": True, # Respawn the agent in a random cell
         "randomize_target_after_goal": True, # Respawn the target in a random cell

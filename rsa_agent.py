@@ -5,7 +5,7 @@ import os
 import torch
 import random
 from collections import deque
-from scipy.stats import entropy
+from scipy.spatial.distance import jensenshannon
 
 try:
     from env import GridEnvironment
@@ -499,13 +499,14 @@ class Observer:
             state_posterior = prior_state_prob
 
         # Entropy and Confidence Calculation
-        log_posterior = np.log2(state_posterior + 1e-9) # Add epsilon to avoid log(0)
+        log_posterior = np.log(state_posterior + 1e-9) # Add epsilon to avoid log(0)
         posterior_entropy = -np.sum(state_posterior * log_posterior)
         
         max_entropy = np.log(num_local_states) if num_local_states > 1 else 1.0
         confidence = 1.0 - (posterior_entropy / max_entropy)
         confidence = np.clip(confidence, 0.0, 1.0)
         self.confidence_scores.append(confidence)
+        print(f"Observer confidence: {confidence:.4f}")
         
         # Wall Probability Calculation
         # Convert the list of states to a NumPy array for vectorized operations.
@@ -758,13 +759,35 @@ def run_simulation(params: dict):
     
     env.close()
 
-    # Calculate final mean squared error between belief maps
-    final_mse = np.mean((agent.internal_belief_map - observer.observer_belief_map)**2)
+    # Create a mask to exclude cells the agent has never seen.
+    # The agent's map is 1.0 for wall, 0.0 for empty, and initial_prob for unseen.
+    observed_mask = agent.internal_belief_map != true_wall_prob
     
+    # Flatten the maps and apply the mask
+    agent_map_flat = agent.internal_belief_map[observed_mask]
+    observer_map_flat = observer.observer_belief_map[observed_mask]
+
+    # 1. Mean Squared Error (on observed cells only)
+    final_mse = np.mean((agent_map_flat - observer_map_flat)**2) if agent_map_flat.size > 0 else 0
+
+    # 2. Jensen-Shannon Divergence
+    # Add epsilon for numerical stability if we treat them as distributions
+    agent_map_prob = agent_map_flat + 1e-9
+    observer_map_prob = observer_map_flat + 1e-9
+    final_js_divergence = jensenshannon(agent_map_prob, observer_map_prob, base=2) if agent_map_flat.size > 0 else 0
+
+    # 3. Binary Cross-Entropy (Log Loss)
+    epsilon = 1e-9
+    observer_map_clipped = np.clip(observer_map_flat, epsilon, 1 - epsilon)
+    log_loss = - (agent_map_flat * np.log(observer_map_clipped) + (1 - agent_map_flat) * np.log(1 - observer_map_clipped))
+    final_log_loss = np.mean(log_loss) if agent_map_flat.size > 0 else 0
+
     metrics = {
         "total_steps_taken": total_steps_taken,
         "goals_reached": goals_reached,
-        "final_mse": final_mse
+        "final_mse": final_mse,
+        "final_js_divergence": final_js_divergence,
+        "final_log_loss": final_log_loss
     }
     return metrics
 
@@ -793,13 +816,13 @@ if __name__ == '__main__':
         "rsa_iterations": 10,
         "agent_rationality": 1.0,
         "agent_utility_beta": 1.0,
-        "sharpening_factor": 1.0, # Factor to sharpen the heuristic model's predictions (make it more confident)
-        "observer_learning_rate": 1.0,
+        "sharpening_factor": 5.0, # Factor to sharpen the heuristic model's predictions (make it more confident)
+        "observer_learning_rate": 0.5,
         "observer_intelligent_sampling": False, 
         "max_steps": 20,
         "render": True,
         "time_delay": 0.1,
-        "num_samples": 10000, # Number of samples for generating possible states
+        "num_samples": 4000, # Number of samples for generating possible states
         "num_iterations": 5, # Number of agent respawns
         "randomize_agent_after_goal": True, # Respawn the agent in a random cell
         "randomize_target_after_goal": True, # Respawn the target in a random cell
@@ -814,8 +837,10 @@ if __name__ == '__main__':
         print("\n" + "="*40)
         print("---       SIMULATION COMPLETE      ---")
         print("="*40)
-        print(f"  Goals Reached:  {results['goals_reached']} / {default_params['num_iterations']}")
-        print(f"  Final Belief MSE: {results['final_mse']:.4f}")
+        print(f"  Goals Reached:      {results['goals_reached']} / {default_params['num_iterations']}")
+        print(f"  Final MSE:          {results['final_mse']:.4f}")
+        print(f"  Final JS Divergence: {results['final_js_divergence']:.4f}")
+        print(f"  Final Log Loss:     {results['final_log_loss']:.4f}")
         print("="*40)
         
     except Exception as e:

@@ -506,7 +506,7 @@ class Observer:
         confidence = 1.0 - (posterior_entropy / max_entropy)
         confidence = np.clip(confidence, 0.0, 1.0)
         self.confidence_scores.append(confidence)
-        print(f"Observer confidence: {confidence:.4f}")
+        # print(f"Observer confidence: {confidence:.4f}") # for debugging
         
         # Wall Probability Calculation
         # Convert the list of states to a NumPy array for vectorized operations.
@@ -523,23 +523,29 @@ class Observer:
     def _update_global_belief(self, local_wall_probs, agent_pos, confidence):
         """Updates the global belief map using the newly inferred local beliefs."""
         self.observer_belief_map[agent_pos] = 0.0
-        
+
         self.learning_rate *= 5 * confidence  # Scale learning rate by confidence
 
-        for r_local in range(VIEW_SIZE):
-            for c_local in range(VIEW_SIZE):
-                if r_local == self.view_radius and c_local == self.view_radius:
-                    continue
+        # Define the global and local boundaries
+        r_global_start = agent_pos[0] - self.view_radius
+        r_global_end = agent_pos[0] + self.view_radius + 1
+        c_global_start = agent_pos[1] - self.view_radius
+        c_global_end = agent_pos[1] + self.view_radius + 1
+        
+        # Ensure boundaries are within the grid
+        r_clip_start = max(0, r_global_start)
+        r_clip_end = min(self.env.grid_size, r_global_end)
+        c_clip_start = max(0, c_global_start)
+        c_clip_end = min(self.env.grid_size, c_global_end)
 
-                r_global = agent_pos[0] + r_local - self.view_radius
-                c_global = agent_pos[1] + c_local - self.view_radius
+        # Get the corresponding slices
+        global_slice = self.observer_belief_map[r_clip_start:r_clip_end, c_clip_start:c_clip_end]
+        local_slice = local_wall_probs[r_clip_start - r_global_start : r_clip_end - r_global_start,
+                                    c_clip_start - c_global_start : c_clip_end - c_global_start]
 
-                if 0 <= r_global < self.env.grid_size and 0 <= c_global < self.env.grid_size:
-                    local_prob = local_wall_probs[r_local, c_local]
-                    global_prob = self.observer_belief_map[r_global, c_global]
-                    
-                    new_global_prob = global_prob + self.learning_rate * (local_prob - global_prob)
-                    self.observer_belief_map[r_global, c_global] = np.clip(new_global_prob, 0.0, 1.0)
+        # Update the belief map
+        new_global_prob = global_slice + self.learning_rate * (local_slice - global_slice)
+        self.observer_belief_map[r_clip_start:r_clip_end, c_clip_start:c_clip_end] = np.clip(new_global_prob, 0.0, 1.0)
 
     def update_belief(self, agent_pos, target_pos, action) -> np.ndarray:
         """Orchestrates the two-step belief update process."""

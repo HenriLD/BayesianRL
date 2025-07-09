@@ -155,7 +155,7 @@ def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic
 
         
 
-def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state_view=None, use_intelligent_sampling=False, unintelligent_prob=0.5, num_samples=NUM_STATE_SAMPLES):
+def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state_view=None, sampling_mode = ['uniform'], uniform_prob=0.5, num_samples=NUM_STATE_SAMPLES):
     """
     Generates possible 5x5 local states based on a belief map.
     """
@@ -189,36 +189,28 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state
     possible_states = []
     num_uncertain = len(uncertain_cells)
 
-    if 0 < num_uncertain <= 10:
-        coords = [cell[0] for cell in uncertain_cells]
-        for combo in itertools.product([env._empty_cell, env._wall_cell], repeat=num_uncertain):
-            new_state = base_state.copy()
-            for i in range(num_uncertain):
-                new_state[coords[i]] = combo[i]
-            possible_states.append(new_state)
-
-    elif num_uncertain > 10:
-        # --- Vectorized State Generation ---
-        uncertain_coords, uncertain_probs = zip(*uncertain_cells)
-        uncertain_probs = np.array(uncertain_probs)
+    uncertain_coords, uncertain_probs = zip(*uncertain_cells)
+    uncertain_probs = np.array(uncertain_probs)        
+    random_matrix = np.random.rand(num_samples, num_uncertain)
         
-        random_matrix = np.random.rand(num_samples, num_uncertain)
-        
-        if use_intelligent_sampling:
-            is_wall_matrix = random_matrix < uncertain_probs
-        else:
-            is_wall_matrix = random_matrix < unintelligent_prob
-            
-        cell_values = np.where(is_wall_matrix, env._wall_cell, env._empty_cell)
-        
-        possible_states_np = np.tile(base_state, (num_samples, 1, 1))
-        
-        rows, cols = zip(*uncertain_coords)
-        possible_states_np[:, rows, cols] = cell_values
-        
-        possible_states = [s for s in possible_states_np]
+    if sampling_mode == 'belief_based':
+        is_wall_matrix = random_matrix < uncertain_probs
+    elif sampling_mode == 'uniform':
+        is_wall_matrix = random_matrix < uniform_prob
+    elif sampling_mode == 'deterministic':
+        # TODO
+        raise NotImplementedError("Deterministic sampling mode is not implemented yet.")
     else:
-        possible_states.append(base_state)
+        raise ValueError(f"Unknown sampling mode: {sampling_mode}")
+            
+    cell_values = np.where(is_wall_matrix, env._wall_cell, env._empty_cell)
+        
+    possible_states_np = np.tile(base_state, (num_samples, 1, 1))
+    rows, cols = zip(*uncertain_coords)
+    possible_states_np[:, rows, cols] = cell_values
+        
+    possible_states = [s for s in possible_states_np]
+
 
     if true_state_view is not None:
         if not any(np.array_equal(s, true_state_view) for s in possible_states):
@@ -270,7 +262,7 @@ class RSAAgent:
     def __init__(self, env: GridEnvironment, rsa_iterations: int = 5, rationality: float = 1, utility_beta: float = 1, 
                  initial_prob: float = 0.25, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 1.0, 
                  num_samples: int = NUM_STATE_SAMPLES, convergence_threshold: float = 0.001, max_cycle: int = 0,
-                 intelligent_sampling: bool = False):   
+                 sampling_mode: str = 'uniform'):   
         self.env = env
         self.rsa_iterations = rsa_iterations
         self.alpha = rationality
@@ -283,7 +275,7 @@ class RSAAgent:
         self.num_samples = num_samples
         self.convergence_threshold = convergence_threshold
         self.position_history = deque(maxlen=max_cycle)
-        self.intelligent_sampling = intelligent_sampling
+        self.sampling_mode = sampling_mode  # Default sampling mode
         
 
         if env.agent_pos is not None:
@@ -304,9 +296,17 @@ class RSAAgent:
         target_pos = tuple(observation['target_pos'])
         s_true = observation['local_view']
 
-        possible_states = _generate_possible_states(
-            agent_pos, target_pos, self.internal_belief_map, self.env, true_state_view=s_true, unintelligent_prob=self.default_prob, num_samples=self.num_samples, intelligent_sampling=self.intelligent_sampling
-        )
+        if self.sampling_mode == 'deterministic':
+            # TODO
+            # possible_states = _generate_possible_states(agent_pos, target_pos, self.internal_belief_map, self.env, 
+            # true_state_view=s_true, uniform_prob=self.default_prob, num_samples=self.num_samples, sampling_mode=self.sampling_mode)
+            raise NotImplementedError("Deterministic sampling mode is not implemented yet.")
+
+        else:
+            possible_states = _generate_possible_states(
+                agent_pos, target_pos, self.internal_belief_map, self.env, true_state_view=s_true, 
+                uniform_prob=self.default_prob, num_samples=self.num_samples, sampling_mode=self.sampling_mode
+            )
 
         s_true_idx = -1
         for i, state in enumerate(possible_states):
@@ -411,13 +411,13 @@ class Observer:
     It maintains its own belief map and updates it by inverting the agent's RSA model.
     """
     def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.25, learning_rate: float = 0.5, 
-                 intelligent_sampling: bool = False, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 5.0, num_samples: int = NUM_STATE_SAMPLES, confidence=False):
+                 sampling_mode: str = 'uniform', model_path: str = "heuristic_agent.zip", sharpening_factor: float = 5.0, num_samples: int = NUM_STATE_SAMPLES, confidence=False):
         self.env = env
         self.alpha = agent_params.get('rationality', 1)
         self.beta = agent_params.get('beta', 1)
         self.rsa_iterations = agent_params.get('rsa_iterations', 3)
         self.learning_rate = learning_rate
-        self.intelligent_sampling = intelligent_sampling
+        self.sampling_mode = sampling_mode
         self.observer_belief_map = np.full((env.grid_size, env.grid_size), initial_prob)
         self.view_radius = VIEW_SIZE // 2
         self.default_prob = initial_prob
@@ -479,7 +479,7 @@ class Observer:
         """Computes the inferred 5x5 local probability map based on the agent's action."""
         possible_states = _generate_possible_states(
             agent_pos, target_pos, self.observer_belief_map, self.env,
-            use_intelligent_sampling=self.intelligent_sampling, unintelligent_prob=self.default_prob, num_samples=self.num_samples
+            sampling_mode=self.sampling_mode, uniform_prob=self.default_prob, num_samples=self.num_samples
         )
         
         # If there are no uncertain states, no inference is needed.
@@ -584,7 +584,6 @@ def run_simulation(params: dict):
     agent_utility_beta = params.get("agent_utility_beta", 1)
     sharpening_factor = params.get("sharpening_factor", 5.0)
     observer_learning_rate = params.get("observer_learning_rate", 1)
-    observer_intelligent_sampling = params.get("observer_intelligent_sampling", False)
     max_steps = params.get("max_steps", 100)
     render = params.get("render", True)
     time_delay = params.get("time_delay", 0.3)
@@ -596,6 +595,8 @@ def run_simulation(params: dict):
     convergence_threshold = params.get("convergence_threshold", 0.001)
     confidence = params.get("confidence", False)
     max_cycle = params.get("max_cycle", 0)
+    agent_sampling_mode = params.get("agent_sampling_mode", 'uniform')
+    observer_sampling_mode = params.get("observer_sampling_mode", 'uniform')
 
     # Randomize Initial Agent/Target Placement
     
@@ -643,7 +644,8 @@ def run_simulation(params: dict):
         sharpening_factor=sharpening_factor,
         num_samples=num_samples,
         convergence_threshold=convergence_threshold,
-        max_cycle=max_cycle
+        max_cycle=max_cycle,
+        sampling_mode=agent_sampling_mode
     )
     
     observer = Observer(
@@ -651,7 +653,7 @@ def run_simulation(params: dict):
         model_path=model_path,
         agent_params={'beta': agent.beta, 'rsa_iterations': agent.rsa_iterations},
         initial_prob=true_wall_prob,
-        intelligent_sampling=observer_intelligent_sampling,
+        sampling_mode=observer_sampling_mode,
         learning_rate=observer_learning_rate,
         sharpening_factor=sharpening_factor,
         num_samples=num_samples,
@@ -827,7 +829,6 @@ if __name__ == '__main__':
         "agent_utility_beta": 1.0,
         "sharpening_factor": 5.0, # Factor to sharpen the heuristic model's predictions (make it more confident)
         "observer_learning_rate": 0.5,
-        "observer_intelligent_sampling": False, 
         "max_steps": 20,
         "render": True,
         "time_delay": 0.1,
@@ -838,7 +839,9 @@ if __name__ == '__main__':
         "randomize_initial_placement": False, # Will use fixed positions in the custom map if set to False
         "convergence_threshold": 0.001, # Convergence threshold for RSA iterations
         "confidence": True, # Whether to use confidence in observer updates
-        "max_cycle": 0  # Length of the anti-cycling memory, set to 0 for no cycle-breaking
+        "max_cycle": 0,  # Length of the anti-cycling memory, set to 0 for no cycle-breaking
+        "agent_sampling_mode": 'uniform', # Sampling mode for agent's belief map
+        "observer_sampling_mode": 'uniform' # Sampling mode for observer's belief map
     }
     
     try:

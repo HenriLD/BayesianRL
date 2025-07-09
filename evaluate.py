@@ -45,13 +45,13 @@ def perform_grid_search():
     """
     # Define the grid of hyperparameters to search.
     param_grid = {
-        "agent_type": ["Base"],  # Pick Agent type
+        "agent_type": ["RSA"],  # Pick Agent type
         "rsa_iterations": [10],
-        "agent_rationality": [0, 0.5, 1.0, 3.0], # How rational the agent is in its decision-making
+        "agent_rationality": [0.1, 0.5, 1.0, 3.0], # How rational the agent is in its decision-making
         "agent_utility_beta": [1], # tradeoff between exploration and exploitation, 0 is bad
         "sharpening_factor": [3.0], # How much the agent sharpens its beliefs, 3 is a good default value
         "observer_learning_rate": [0.5], # 0.5 is a good default value for the observer's learning rate
-        "num_samples": [10000],
+        "num_samples": [1000],
         "convergence_threshold": [0.01],
         "confidence": [True], # Improves performance a lot
         "max_cycle": [0],
@@ -63,6 +63,8 @@ def perform_grid_search():
         "randomize_agent_after_goal": [True],
         "randomize_target_after_goal": [True],
         "randomize_initial_placement": [True],
+        "agent_sampling_mode": ['uniform'],  # Sampling mode for agent's belief map ['uniform', 'deterministic', 'belief_based']
+        "observer_sampling_mode": ['uniform'],  # Sampling mode for observer's belief map ['uniform', 'deterministic', 'belief_based']
         "custom_map": [
             [
                 "##############",
@@ -89,7 +91,7 @@ def perform_grid_search():
 
     results_history = []
 
-    num_runs = 128
+    num_runs = 256
     # Create a list of all runs to be executed.
     all_runs_params = [params for params in param_combinations for _ in range(num_runs)]
     total_simulations = len(all_runs_params)

@@ -51,15 +51,15 @@ def perform_grid_search():
         "agent_utility_beta": [1], # tradeoff between exploration and exploitation, 0 is bad
         "sharpening_factor": [3.0], # How much the agent sharpens its beliefs, 3 is a good default value
         "observer_learning_rate": [0.5], # 0.5 is a good default value for the observer's learning rate
-        "num_samples": [1000],
+        "num_samples": [1000], # Number of samples to draw for the agent's belief map
         "convergence_threshold": [0.01],
         "confidence": [True], # Improves performance a lot
-        "max_cycle": [0],
+        "max_cycle": [0], # Length of the anti-cycling memory, set to 0 for no cycle-breaking
         "model_path": ["heuristic_agent.zip"],
-        "max_steps": [20],
+        "max_steps": [20], # Maximum number of steps per agent respawn
         "render": [False],  # Disable rendering for speed
         "time_delay": [0.0],
-        "num_iterations": [3],
+        "num_iterations": [3], # Number of agent respawns
         "randomize_agent_after_goal": [True],
         "randomize_target_after_goal": [True],
         "randomize_initial_placement": [True],

@@ -162,28 +162,31 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state
 
     possible_states = []
     num_uncertain = len(uncertain_cells)
-
-    uncertain_coords, uncertain_probs = zip(*uncertain_cells)
-    uncertain_probs = np.array(uncertain_probs)        
-    random_matrix = np.random.rand(num_samples, num_uncertain)
-        
-    if sampling_mode == 'belief_based':
-        is_wall_matrix = random_matrix < uncertain_probs
-    elif sampling_mode == 'uniform':
-        is_wall_matrix = random_matrix < uniform_prob
-    elif sampling_mode == 'deterministic':
-        # TODO
-        raise NotImplementedError("Deterministic sampling mode is not implemented yet.")
-    else:
-        raise ValueError(f"Unknown sampling mode: {sampling_mode}")
+    
+    if num_uncertain == 0:
+        possible_states.append(base_state)
+    else: 
+        uncertain_coords, uncertain_probs = zip(*uncertain_cells)
+        uncertain_probs = np.array(uncertain_probs)        
+        random_matrix = np.random.rand(num_samples, num_uncertain)
             
-    cell_values = np.where(is_wall_matrix, env._wall_cell, env._empty_cell)
-        
-    possible_states_np = np.tile(base_state, (num_samples, 1, 1))
-    rows, cols = zip(*uncertain_coords)
-    possible_states_np[:, rows, cols] = cell_values
-        
-    possible_states = [s for s in possible_states_np]
+        if sampling_mode == 'belief_based':
+            is_wall_matrix = random_matrix < uncertain_probs
+        elif sampling_mode == 'uniform':
+            is_wall_matrix = random_matrix < uniform_prob
+        elif sampling_mode == 'deterministic':
+            # TODO
+            raise NotImplementedError("Deterministic sampling mode is not implemented yet.")
+        else:
+            raise ValueError(f"Unknown sampling mode: {sampling_mode}")
+                
+        cell_values = np.where(is_wall_matrix, env._wall_cell, env._empty_cell)
+            
+        possible_states_np = np.tile(base_state, (num_samples, 1, 1))
+        rows, cols = zip(*uncertain_coords)
+        possible_states_np[:, rows, cols] = cell_values
+            
+        possible_states = [s for s in possible_states_np]
 
 
     if true_state_view is not None:

@@ -1,8 +1,6 @@
 import numpy as np
-import itertools
 import time
 import os
-import torch
 import random
 from collections import deque
 from scipy.spatial.distance import jensenshannon
@@ -363,7 +361,7 @@ def run_simulation(params: dict):
     max_steps = params.get("max_steps", 100)
     render = params.get("render", True)
     time_delay = params.get("time_delay", 0.3)
-    num_samples = params.get("num_samples", NUM_STATE_SAMPLES)
+    num_samples = params.get("num_samples", 1000)
     num_iterations = params.get("num_iterations", 1)
     randomize_agent_after_goal = params.get("randomize_agent_after_goal", True)
     randomize_target_after_goal = params.get("randomize_target_after_goal", False)

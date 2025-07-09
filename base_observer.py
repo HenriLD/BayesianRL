@@ -8,9 +8,6 @@ from utils import (
     _calculate_heuristic_utilities,
     _generate_possible_states,
 )
-from rsa_agent import (_generate_possible_states, 
-                         _calculate_heuristic_utilities, 
-                         _render_belief_map_with_chars)
 
 random.seed(42)  # For reproducibility
 VIEW_SIZE = 5

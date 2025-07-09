@@ -13,7 +13,7 @@ class BaseAgent:
     This class contains the common functionalities shared by all agents, such as
     updating beliefs from observations and rendering belief maps.
     """
-    def __init__(self, env: GridEnvironment, model_path: str, initial_prob: float = 0.3, max_cycle: int = 0):
+    def __init__(self, env: GridEnvironment, model_path: str, initial_prob: float = 0.3, max_cycle: int = 0, sampling_mode: str = 'uniform'):
         """
         Initializes the BaseAgent.
 
@@ -28,6 +28,7 @@ class BaseAgent:
         self.internal_belief_map = np.full((env.grid_size, env.grid_size), initial_prob)
         self.default_prob = initial_prob
         self.position_history = deque(maxlen=max_cycle)
+        self.sampling_mode = sampling_mode # Unused in this base class, but can be useful for subclasses
         
         # Action moves mapping, useful for subclasses and cycle-breaking
         self.action_moves = {
@@ -43,7 +44,6 @@ class BaseAgent:
 
         try:
             self.heuristic_model = PPO.load(model_path, env=env)
-            print("Heuristic model loaded successfully for BaseAgent.")
         except Exception as e:
             print(f"Error loading heuristic model for BaseAgent: {e}")
             self.heuristic_model = None
@@ -123,3 +123,14 @@ class BaseAgent:
             self.internal_belief_map, self.env.grid_size, 
             agent_pos, target_pos, self.default_prob
         )
+
+    def update_beliefs_after_action(self, observation, action):
+        """
+        Updates the agent's internal belief based on the action taken.
+        
+        Args:
+            observation (dict): The agent's current observation from the environment.
+            action (int): The action taken by the agent.
+        """
+        # Update the internal belief map with the new observation
+        self.update_internal_belief(observation)

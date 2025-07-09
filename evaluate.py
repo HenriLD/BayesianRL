@@ -20,7 +20,11 @@ def run_simulation_wrapper(params):
     It catches exceptions within the process to prevent the entire grid search from crashing.
     """
     try:
-        return run_simulation(params)
+        # It's better to create a new dictionary to avoid modifying the original params
+        run_results = params.copy()
+        metrics = run_simulation(params)
+        run_results.update(metrics)
+        return run_results
     except Exception as e:
         print(f"\nAn error occurred in a simulation process with params: {params}")
         import traceback
@@ -35,25 +39,23 @@ def perform_grid_search():
     """
     # Grid Search Configuration
     param_grid = {
-        "agent_type": ["RSA", "Base"],
-        "observer_type": ["RSA", "Base"],
+        "agent_type": ["RSA"],
+        "observer_type": ["RSA"],
         "num_trials": [1], # Set to 1 for grid search, as we aggregate across param combinations
         "render": [False], # Must be False for multiprocessing
-        
-        # Key RSA parameter to vary
         "rationality": [1.0],
-        
-        # Constant parameters for this experiment
         "agent_utility_beta": [1.0],
         "sharpening_factor": [3.0],
         "observer_learning_rate": [0.5],
-        "num_samples": [3000],
+        "num_samples": [4096],
         "convergence_threshold": [0.01],
         "use_confidence": [True],
         "max_cycle": [4],
         "model_path": ["heuristic_agent.zip"],
-        "max_steps": [25],
-        "num_iterations": [5],
+        "max_steps": [20],
+        "num_iterations": [3],
+        "agent_sampling_mode": ['uniform', 'belief_based'],
+        "observer_sampling_mode": ['uniform', 'belief_based'],
         "randomize_agent_after_goal": [True],
         "randomize_target_after_goal": [True],
         "randomize_initial_placement": [True],
@@ -83,7 +85,7 @@ def perform_grid_search():
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
     
     # Define how many times to run each unique parameter combination
-    runs_per_combination = 32 
+    runs_per_combination = 16 
     all_runs_params = [params for params in param_combinations for _ in range(runs_per_combination)]
     total_simulations = len(all_runs_params)
 
@@ -127,27 +129,43 @@ def perform_grid_search():
 
     metrics_to_plot = ['final_mse', 'final_js_divergence', 'goals_reached']
     
-    for metric in metrics_to_plot:
-        plt.figure(figsize=(8 * len(varying_params), 6))
-        g = sns.catplot(
-            data=df, 
-            x="rationality", 
-            y=metric, 
-            col="observer_type", 
-            row="agent_type",
-            kind="violin", 
-            inner="quartile",
-            height=5, 
-            aspect=1.2
-        )
-        g.fig.suptitle(f'{metric.replace("_", " ").title()} Analysis', y=1.03)
-        g.set_axis_labels(x_var="Agent Rationality (alpha)", y_var=metric.replace("_", " ").title())
-        
-        # Save the plot
-        plot_filename = os.path.join(results_dir, f"plot_{metric}_{timestamp}.png")
-        plt.savefig(plot_filename, bbox_inches='tight')
-        print(f"Plot saved to '{os.path.abspath(plot_filename)}'")
-        plt.close() # Close the figure to avoid displaying it if not needed
+    # Generate a plot for each combination of a varied parameter and a metric
+    for x_param in varying_params:
+        for y_metric in metrics_to_plot:
+            # Determine which parameters to use for faceting, avoiding the x_param
+            facet_params = ["agent_type", "observer_type"]
+            col_param = None
+            row_param = None
+
+            available_facets = [p for p in facet_params if p != x_param]
+            if available_facets:
+                col_param = available_facets[0]
+            if len(available_facets) > 1:
+                row_param = available_facets[1]
+
+
+            plt.figure(figsize=(12, 6)) # Adjusted figure size for better layout
+            g = sns.catplot(
+                data=df, 
+                x=x_param, 
+                y=y_metric, 
+                col=col_param, 
+                row=row_param,
+                kind="violin", 
+                inner="quartile",
+                height=5, 
+                aspect=1.2
+            )
+            
+            title = f'{y_metric.replace("_", " ").title()} vs. {x_param.replace("_", " ").title()}'
+            g.fig.suptitle(title, y=1.03)
+            g.set_axis_labels(x_var=x_param.replace("_", " ").title(), y_var=y_metric.replace("_", " ").title())
+            
+            # Save the plot with a descriptive name
+            plot_filename = os.path.join(results_dir, f"plot_{y_metric}_vs_{x_param}_{timestamp}.png")
+            plt.savefig(plot_filename, bbox_inches='tight')
+            print(f"Plot saved to '{os.path.abspath(plot_filename)}'")
+            plt.close('all') # Close all figures to free up memory
 
     print("\nGrid search and visualization complete.")
     # To display plots, uncomment the line below

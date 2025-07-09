@@ -31,7 +31,9 @@ class RSAAgent(BaseAgent):
         self.convergence_threshold = rsa_params.get('convergence_threshold', 0.001)
         self.sampling_mode = rsa_params.get('sampling_mode', 'uniform')
 
-        self.internal_observer = RSAObserver(env, model_path, agent_params=rsa_params, **kwargs)
+        if self. sampling_mode == "belief_based":
+            observer_kwargs = {k: v for k, v in kwargs.items() if k != 'max_cycle'}
+            self.internal_observer = RSAObserver(env, model_path, agent_params=rsa_params, **observer_kwargs)
 
     def _run_rsa_reasoning(self, world_utilities):
         """Performs the alternating speaker-listener RSA calculation."""
@@ -119,6 +121,7 @@ class RSAAgent(BaseAgent):
         self.update_internal_belief(observation)
         
         # 2. Update the internal observer's belief based on the action taken
-        agent_pos = tuple(observation['agent_pos'])
-        target_pos = tuple(observation['target_pos'])
-        self.internal_observer.update_belief(agent_pos, target_pos, action)
+        if self.sampling_mode == 'belief_based':
+            agent_pos = tuple(observation['agent_pos'])
+            target_pos = tuple(observation['target_pos'])
+            self.internal_observer.update_belief(agent_pos, target_pos, action)

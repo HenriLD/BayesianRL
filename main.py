@@ -59,7 +59,8 @@ def run_simulation(params: dict):
     
     agent_kwargs = {
         'initial_prob': true_wall_prob,
-        'max_cycle': params.get("max_cycle", 0)
+        'max_cycle': params.get("max_cycle", 0),
+        'sampling_mode': params.get("agent_sampling_mode", 'uniform'),
     }
 
     if agent_type == "RSA":
@@ -115,6 +116,8 @@ def run_simulation(params: dict):
 
             new_obs, _, terminated, truncated, _ = env.step(action)
             total_steps_taken += 1
+
+            agent.update_beliefs_after_action(new_obs, action)
             
             if render:
                 print("\nActual Environment State:")
@@ -177,6 +180,7 @@ if __name__ == '__main__':
         "model_path": "heuristic_agent.zip",
         "agent_type": "RSA",  # Can be "RSA" or "Base"
         "observer_type": "RSA", # Can be "RSA" or "Base"
+        "agent_sampling_mode": 'uniform',  # Sampling mode for agent's belief updates
         
         # RSA-specific params (used by RSAAgent and RSAObserver)
         "rsa_iterations": 10,

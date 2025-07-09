@@ -1,7 +1,5 @@
 import numpy as np
-
-# Assumes base_agent.py is in the same directory (Agents/)
-# Assumes utils.py is in the parent directory
+from rsa_observer import RSAObserver
 from base_agent import BaseAgent
 from utils import _generate_possible_states, _calculate_heuristic_utilities, _render_belief_map_with_chars
 
@@ -32,6 +30,8 @@ class RSAAgent(BaseAgent):
         self.num_samples = rsa_params.get('num_samples', 5000)
         self.convergence_threshold = rsa_params.get('convergence_threshold', 0.001)
         self.sampling_mode = rsa_params.get('sampling_mode', 'uniform')
+
+        self.internal_observer = RSAObserver(env, model_path, agent_params=rsa_params, **kwargs)
 
     def _run_rsa_reasoning(self, world_utilities):
         """Performs the alternating speaker-listener RSA calculation."""
@@ -76,8 +76,15 @@ class RSAAgent(BaseAgent):
         target_pos = tuple(observation['target_pos'])
         s_true = observation['local_view']
 
+        # Use the internal observer's belief for sampling if in belief-based mode
+        belief_map_for_sampling = (
+            self.internal_observer.observer_belief_map 
+            if self.sampling_mode == 'belief_based' 
+            else self.internal_belief_map
+        )
+
         possible_states = _generate_possible_states(
-            agent_pos, target_pos, self.internal_belief_map, self.env, 
+            agent_pos, target_pos, belief_map_for_sampling, self.env, 
             true_state_view=s_true, sampling_mode=self.sampling_mode,
             uniform_prob=self.default_prob, num_samples=self.num_samples
         )
@@ -102,3 +109,16 @@ class RSAAgent(BaseAgent):
         chosen_action = self._get_action_with_anti_cycle(sorted_actions, agent_pos)
 
         return int(chosen_action), final_action_probs
+    
+    def update_beliefs_after_action(self, observation, action):
+        """
+        Updates both the agent's internal ground-truth belief and the belief
+        of its internal observer model based on the action taken.
+        """
+        # 1. Update the agent's own ground-truth map from the new observation
+        self.update_internal_belief(observation)
+        
+        # 2. Update the internal observer's belief based on the action taken
+        agent_pos = tuple(observation['agent_pos'])
+        target_pos = tuple(observation['target_pos'])
+        self.internal_observer.update_belief(agent_pos, target_pos, action)

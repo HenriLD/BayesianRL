@@ -1,5 +1,6 @@
 import numpy as np
 import random
+from scipy.stats import entropy
 from env import GridEnvironment
 from stable_baselines3 import PPO
 from utils import (
@@ -123,8 +124,7 @@ class BaseObserver:
         state_posterior = posterior / posterior_sum if posterior_sum > 0 else prior
         
         # --- Confidence Calculation (based on entropy of the posterior) ---
-        log_posterior = np.log(state_posterior + 1e-9) # Epsilon for numerical stability
-        posterior_entropy = -np.sum(state_posterior * log_posterior)
+        posterior_entropy = entropy(state_posterior)
         max_entropy = np.log(num_local_states) if num_local_states > 1 else 1.0
         confidence = np.clip(1.0 - (posterior_entropy / max_entropy), 0.0, 1.0)
         self.confidence_scores.append(confidence)

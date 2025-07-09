@@ -47,11 +47,11 @@ def perform_grid_search():
     param_grid = {
         "agent_type": ["Base"],  # Pick Agent type
         "rsa_iterations": [10],
-        "agent_rationality": [1.0], # How rational the agent is in its decision-making
-        "agent_utility_beta": [0, 0.5, 1], #tradeoff between exploration and exploitation
+        "agent_rationality": [0, 0.5, 1.0, 3.0], # How rational the agent is in its decision-making
+        "agent_utility_beta": [1], # tradeoff between exploration and exploitation, 0 is bad
         "sharpening_factor": [3.0], # How much the agent sharpens its beliefs, 3 is a good default value
         "observer_learning_rate": [0.5], # 0.5 is a good default value for the observer's learning rate
-        "num_samples": [100, 500, 1000, 4000, 10000, 50000],
+        "num_samples": [10000],
         "convergence_threshold": [0.01],
         "confidence": [True], # Improves performance a lot
         "max_cycle": [0],

@@ -1,161 +1,159 @@
 import os
-os.environ['KMP_DUPLICATE_LIB_OK']='True'
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-
 import itertools
 import pandas as pd
 import seaborn as sns
-import numpy as np
-from rsa_agent import run_simulation as run_rsa_simulation
-from base_agent import run_simulation as run_base_simulation
 import matplotlib.pyplot as plt
 from datetime import datetime
 import multiprocessing
-import tqdm
+from tqdm import tqdm
+import sys
 
-# This function takes a single 'params' dict and is used by the multiprocessing Pool.
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# Now we can import the main simulation runner
+from main import run_simulation
+
 def run_simulation_wrapper(params):
     """
-    Wrapper to call run_simulation with a single argument for use with multiprocessing.
+    A simple wrapper to call the main run_simulation function.
+    This is used by the multiprocessing Pool to run simulations in parallel.
+    It catches exceptions within the process to prevent the entire grid search from crashing.
     """
     try:
-        agent_type = params.get("agent_type")
-        
-        # Select the correct simulation function
-        if agent_type == "RSA":
-            results = run_rsa_simulation(params)
-        elif agent_type == "Base":
-            results = run_base_simulation(params)
-        else:
-            raise ValueError(f"Unknown agent_type: {agent_type}")
-
-        # Combine the initial parameters with the simulation results
-        current_results = params.copy()
-        current_results.update(results)
-        return current_results
+        return run_simulation(params)
     except Exception as e:
         print(f"\nAn error occurred in a simulation process with params: {params}")
         import traceback
         traceback.print_exc()
+        # Return None so we can filter out failed runs
         return None
 
 def perform_grid_search():
     """
-    Performs a hyperparameter grid search for the RSA simulation and visualizes the results.
+    Performs a hyperparameter grid search for the simulation and visualizes the results.
+    This function is highly customizable for experimentation.
     """
-    # Define the grid of hyperparameters to search.
+    # Grid Search Configuration
     param_grid = {
-        "agent_type": ["RSA"],  # Pick Agent type
-        "rsa_iterations": [10],
-        "agent_rationality": [0.1, 0.5, 1.0, 3.0], # How rational the agent is in its decision-making
-        "agent_utility_beta": [1], # tradeoff between exploration and exploitation, 0 is bad
-        "sharpening_factor": [3.0], # How much the agent sharpens its beliefs, 3 is a good default value
-        "observer_learning_rate": [0.5], # 0.5 is a good default value for the observer's learning rate
-        "num_samples": [1000], # Number of samples to draw for the agent's belief map
+        "agent_type": ["RSA", "Base"],
+        "observer_type": ["RSA", "Base"],
+        "num_trials": [1], # Set to 1 for grid search, as we aggregate across param combinations
+        "render": [False], # Must be False for multiprocessing
+        
+        # Key RSA parameter to vary
+        "rationality": [1.0],
+        
+        # Constant parameters for this experiment
+        "agent_utility_beta": [1.0],
+        "sharpening_factor": [3.0],
+        "observer_learning_rate": [0.5],
+        "num_samples": [3000],
         "convergence_threshold": [0.01],
-        "confidence": [True], # Improves performance a lot
-        "max_cycle": [0], # Length of the anti-cycling memory, set to 0 for no cycle-breaking
+        "use_confidence": [True],
+        "max_cycle": [4],
         "model_path": ["heuristic_agent.zip"],
-        "max_steps": [20], # Maximum number of steps per agent respawn
-        "render": [False],  # Disable rendering for speed
-        "time_delay": [0.0],
-        "num_iterations": [3], # Number of agent respawns
+        "max_steps": [25],
+        "num_iterations": [5],
         "randomize_agent_after_goal": [True],
         "randomize_target_after_goal": [True],
         "randomize_initial_placement": [True],
-        "agent_sampling_mode": ['uniform'],  # Sampling mode for agent's belief map ['uniform', 'deterministic', 'belief_based']
-        "observer_sampling_mode": ['uniform'],  # Sampling mode for observer's belief map ['uniform', 'deterministic', 'belief_based']
         "custom_map": [
             [
-                "##############",
-                "#     T#     #",
-                "#  ##    #   #",
+                "##############", 
+                "#     T#     #", 
+                "#  ##    #   #", 
                 "#   ## # #   #",
-                "#      #     #",
-                "# # #        #",
+                "#      #     #", 
+                "# # #        #", 
                 "#   #   ### ##",
                 "## ## ##    ##",
-                "#           ##",
-                "# ####  ##  ##",
-                "#    #  # #  #",
+                "#           ##", 
+                "# ####  ##  ##", 
+                "#    #  # #  #", 
                 "# ##    #    #",
-                "#A#  ####    #",
+                "#A#  ####    #", 
                 "##############",
             ]
         ]
     }
 
-    # Create a list of all parameter combinations
+    # --- Execution ---
+    # Create a list of all parameter combinations from the grid
     keys, values = zip(*param_grid.items())
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
-
-    results_history = []
-
-    num_runs = 256
-    # Create a list of all runs to be executed.
-    all_runs_params = [params for params in param_combinations for _ in range(num_runs)]
+    
+    # Define how many times to run each unique parameter combination
+    runs_per_combination = 32 
+    all_runs_params = [params for params in param_combinations for _ in range(runs_per_combination)]
     total_simulations = len(all_runs_params)
 
-    print(f"Starting hyperparameter grid search with {len(param_combinations)} combinations...")
+    print(f"Starting hyperparameter grid search...")
+    print(f"Total unique parameter combinations: {len(param_combinations)}")
+    print(f"Runs per combination: {runs_per_combination}")
+    print(f"Total simulations to run: {total_simulations}")
 
+    results_history = []
     # Use a multiprocessing Pool to run simulations in parallel
     with multiprocessing.Pool(processes=os.cpu_count()) as pool:
-        # 'map' will distribute the 'all_runs_params' list to the 'run_simulation_wrapper' function
-        # across the available CPU cores. It blocks until all results are ready.
-        pbar = tqdm.tqdm(pool.imap_unordered(run_simulation_wrapper, all_runs_params), total=total_simulations)
-        for result in pbar:
-            if result:
-                results_history.append(result)
+        with tqdm(total=total_simulations, desc="Grid Search Progress") as pbar:
+            for result in pool.imap_unordered(run_simulation_wrapper, all_runs_params):
+                if result:
+                    results_history.append(result)
+                pbar.update()
 
-    results_history = [r for r in results_history if r is not None] # Filter out any None results due to exceptions
+    if not results_history:
+        print("No simulation results were generated. Exiting.")
+        return
 
-    if results_history:
-        df = pd.DataFrame(results_history)
-        
-        # Create a unique filename with a timestamp
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        results_filename = f"results\grid_search_results_{timestamp}.csv"
-        
-        # Save to CSV
-        df.to_csv(results_filename, index=False)
-        print(f"Results saved to '{os.path.abspath(results_filename)}'")
+    # --- Data Processing and Saving ---
+    df = pd.DataFrame(results_history)
+    
+    # Create a unique filename with a timestamp for the results
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    results_dir = "results"
+    os.makedirs(results_dir, exist_ok=True)
+    results_filename = os.path.join(results_dir, f"grid_search_results_{timestamp}.csv")
+    
+    df.to_csv(results_filename, index=False)
+    print(f"\nResults saved to '{os.path.abspath(results_filename)}'")
 
-        # --- Visualization ---
-        
-        # Identify which parameters were actually varied
-        varying_params = [key for key, value in param_grid.items() if len(value) > 1]
-        
-        if not varying_params:
-            print("No hyperparameters were varied. Skipping plot generation.")
-            return
+    # --- Visualization ---
+    # Identify which parameters were actually varied in the grid search
+    varying_params = [key for key, value in param_grid.items() if len(value) > 1]
+    
+    if not varying_params:
+        print("No hyperparameters were varied. Skipping plot generation.")
+        return
 
-        metrics_to_plot = ['final_mse', 'final_js_divergence', 'final_log_loss', 'goals_reached']
-        
-        num_metrics = len(metrics_to_plot)
-        num_params = len(varying_params)
-        
-        # Create a figure with a row for each metric
-        fig, axes = plt.subplots(num_params, num_metrics, figsize=(5 * num_metrics, 4 * num_params), squeeze=False)
-        
-        fig.suptitle('Hyperparameter Grid Search Results', fontsize=20, y=1.03)
-
-        for i, param in enumerate(varying_params):
-            for j, metric in enumerate(metrics_to_plot):
-                ax = axes[i, j]
-                sns.violinplot(x=param, y=metric, data=df, ax=ax, inner='quartile', cut=0)
-                ax.set_title(f'{metric.replace("_", " ").title()} by {param.replace("_", " ").title()}')
-                ax.set_xlabel(param.replace("_", " ").title())
-                ax.set_ylabel(metric.replace("_", " ").title())
-                ax.tick_params(axis='x', rotation=45)
-
-        plt.tight_layout(rect=[0, 0, 1, 0.98])
+    metrics_to_plot = ['final_mse', 'final_js_divergence', 'goals_reached']
+    
+    for metric in metrics_to_plot:
+        plt.figure(figsize=(8 * len(varying_params), 6))
+        g = sns.catplot(
+            data=df, 
+            x="rationality", 
+            y=metric, 
+            col="observer_type", 
+            row="agent_type",
+            kind="violin", 
+            inner="quartile",
+            height=5, 
+            aspect=1.2
+        )
+        g.fig.suptitle(f'{metric.replace("_", " ").title()} Analysis', y=1.03)
+        g.set_axis_labels(x_var="Agent Rationality (alpha)", y_var=metric.replace("_", " ").title())
         
         # Save the plot
-        plot_filename = f"results\grid_search_plots_{timestamp}.png"
+        plot_filename = os.path.join(results_dir, f"plot_{metric}_{timestamp}.png")
         plt.savefig(plot_filename, bbox_inches='tight')
-        print(f"Plots saved to '{os.path.abspath(plot_filename)}'")
-        
-        plt.show()
+        print(f"Plot saved to '{os.path.abspath(plot_filename)}'")
+        plt.close() # Close the figure to avoid displaying it if not needed
+
+    print("\nGrid search and visualization complete.")
+    # To display plots, uncomment the line below
+    # plt.show()
 
 if __name__ == '__main__':
+    # This check is important for multiprocessing on Windows
+    multiprocessing.freeze_support()
     perform_grid_search()

@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from itertools import product
 
 NUM_STATE_SAMPLES = 1000
 VIEW_SIZE = 5
@@ -169,6 +170,31 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state
         uncertain_coords, uncertain_probs = zip(*uncertain_cells)
         uncertain_probs = np.array(uncertain_probs)        
         random_matrix = np.random.rand(num_samples, num_uncertain)
+
+        if sampling_mode == 'simple':
+            if num_samples != 4 * (2**10):
+                raise ValueError(f"For 'simple' sampling mode, num_samples must be {4 * (2**10)}")
+        
+        # Define the four 10-cell cardinal regions
+        regions = {
+            'up': [(r, c) for r in range(2) for c in range(5)],
+            'down': [(r, c) for r in range(3, 5) for c in range(5)],
+            'left': [(r, c) for r in range(5) for c in range(2)],
+            'right': [(r, c) for r in range(5) for c in range(3, 5)]
+        }
+        
+        wall_values = [env._wall_cell, env._empty_cell]
+
+        for region_cells in regions.values():
+            # Generate all 2^10 combinations for the current region
+            for combination in product(wall_values, repeat=10):
+                new_state = base_state.copy()
+                # Place walls according to the combination
+                for i, cell_coord in enumerate(region_cells):
+                    # Only place walls, assume rest is empty as per base_state
+                    if combination[i] == env._wall_cell:
+                        new_state[cell_coord] = env._wall_cell
+                possible_states.append(new_state)
             
         if sampling_mode == 'belief_based':
             is_wall_matrix = random_matrix < uncertain_probs

@@ -6,7 +6,8 @@ import itertools
 import pandas as pd
 import seaborn as sns
 import numpy as np
-from rsa_agent import run_simulation
+from rsa_agent import run_simulation as run_rsa_simulation
+from base_agent import run_simulation as run_base_simulation
 import matplotlib.pyplot as plt
 from datetime import datetime
 import multiprocessing
@@ -18,11 +19,17 @@ def run_simulation_wrapper(params):
     Wrapper to call run_simulation with a single argument for use with multiprocessing.
     """
     try:
-        # Each run within a process gets a copy of the params and returns the results.
-        # This example assumes one run per combination for simplicity with multiprocessing.
-        # For multiple runs per combination, the logic would need to be adjusted here
-        # or in the main loop after collecting results.
-        results = run_simulation(params)
+        agent_type = params.get("agent_type")
+        
+        # Select the correct simulation function
+        if agent_type == "RSA":
+            results = run_rsa_simulation(params)
+        elif agent_type == "Base":
+            results = run_base_simulation(params)
+        else:
+            raise ValueError(f"Unknown agent_type: {agent_type}")
+
+        # Combine the initial parameters with the simulation results
         current_results = params.copy()
         current_results.update(results)
         return current_results
@@ -38,15 +45,24 @@ def perform_grid_search():
     """
     # Define the grid of hyperparameters to search.
     param_grid = {
-        "rsa_iterations": [1, 5, 10, 50],
-        "agent_rationality": [5.0], # How rational the agent is in its decision-making (useless for now)
-        "agent_utility_beta": [2.0], #tradeoff between exploration and exploitation
+        "agent_type": ["Base"],  # Pick Agent type
+        "rsa_iterations": [10],
+        "agent_rationality": [1.0], # How rational the agent is in its decision-making
+        "agent_utility_beta": [0, 0.5, 1], #tradeoff between exploration and exploitation
         "sharpening_factor": [3.0], # How much the agent sharpens its beliefs, 3 is a good default value
         "observer_learning_rate": [0.5], # 0.5 is a good default value for the observer's learning rate
-        "num_samples": [1000],
+        "num_samples": [100, 500, 1000, 4000, 10000, 50000],
         "convergence_threshold": [0.01],
         "confidence": [True], # Improves performance a lot
         "max_cycle": [0],
+        "model_path": ["heuristic_agent.zip"],
+        "max_steps": [20],
+        "render": [False],  # Disable rendering for speed
+        "time_delay": [0.0],
+        "num_iterations": [3],
+        "randomize_agent_after_goal": [True],
+        "randomize_target_after_goal": [True],
+        "randomize_initial_placement": [True],
         "custom_map": [
             [
                 "##############",
@@ -64,15 +80,7 @@ def perform_grid_search():
                 "#A#  ####    #",
                 "##############",
             ]
-        ],
-        "model_path": ["heuristic_agent.zip"],
-        "max_steps": [20],
-        "render": [False],  # Disable rendering for speed
-        "time_delay": [0.0],
-        "num_iterations": [3],
-        "randomize_agent_after_goal": [True],
-        "randomize_target_after_goal": [True],
-        "randomize_initial_placement": [True]
+        ]
     }
 
     # Create a list of all parameter combinations

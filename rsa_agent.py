@@ -269,7 +269,8 @@ class RSAAgent:
     """
     def __init__(self, env: GridEnvironment, rsa_iterations: int = 5, rationality: float = 1, utility_beta: float = 1, 
                  initial_prob: float = 0.25, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 1.0, 
-                 num_samples: int = NUM_STATE_SAMPLES, convergence_threshold: float = 0.001, max_cycle: int = 0):   
+                 num_samples: int = NUM_STATE_SAMPLES, convergence_threshold: float = 0.001, max_cycle: int = 0,
+                 intelligent_sampling: bool = False):   
         self.env = env
         self.rsa_iterations = rsa_iterations
         self.alpha = rationality
@@ -282,6 +283,7 @@ class RSAAgent:
         self.num_samples = num_samples
         self.convergence_threshold = convergence_threshold
         self.position_history = deque(maxlen=max_cycle)
+        self.intelligent_sampling = intelligent_sampling
         
 
         if env.agent_pos is not None:
@@ -303,7 +305,7 @@ class RSAAgent:
         s_true = observation['local_view']
 
         possible_states = _generate_possible_states(
-            agent_pos, target_pos, self.internal_belief_map, self.env, true_state_view=s_true, unintelligent_prob=self.default_prob, num_samples=self.num_samples,
+            agent_pos, target_pos, self.internal_belief_map, self.env, true_state_view=s_true, unintelligent_prob=self.default_prob, num_samples=self.num_samples, intelligent_sampling=self.intelligent_sampling
         )
 
         s_true_idx = -1
@@ -408,7 +410,8 @@ class Observer:
     An observer that only sees the agent's position and actions.
     It maintains its own belief map and updates it by inverting the agent's RSA model.
     """
-    def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.25, learning_rate: float = 0.5, intelligent_sampling: bool = False, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 5.0, num_samples: int = NUM_STATE_SAMPLES, confidence=False):
+    def __init__(self, env: GridEnvironment, agent_params: dict, initial_prob: float = 0.25, learning_rate: float = 0.5, 
+                 intelligent_sampling: bool = False, model_path: str = "heuristic_agent.zip", sharpening_factor: float = 5.0, num_samples: int = NUM_STATE_SAMPLES, confidence=False):
         self.env = env
         self.alpha = agent_params.get('rationality', 1)
         self.beta = agent_params.get('beta', 1)

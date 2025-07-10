@@ -45,7 +45,7 @@ class RSAObserver(BaseObserver):
         """
         # S_0: Initialize a "literal speaker" that acts based on raw utilities.
         with np.errstate(divide='ignore', invalid='ignore'):
-            exp_utilities = np.exp(self.beta * world_utilities)
+            exp_utilities = np.exp(world_utilities)
             speaker_probs = np.nan_to_num(exp_utilities / exp_utilities.sum(axis=1, keepdims=True), posinf=0)
 
         # Iteratively refine the speaker (agent model) and listener (observer model).

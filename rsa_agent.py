@@ -39,7 +39,7 @@ class RSAAgent(BaseAgent):
         """Performs the alternating speaker-listener RSA calculation."""
         # S_0: Literal speaker model, P(a|s) = softmax(beta * U(s,a))
         with np.errstate(divide='ignore', invalid='ignore'):
-            exp_utilities = np.exp(self.beta * world_utilities)
+            exp_utilities = np.exp(world_utilities)
             speaker_probs = np.nan_to_num(exp_utilities / exp_utilities.sum(axis=1, keepdims=True), posinf=0)
 
         for _ in range(self.rsa_iterations):

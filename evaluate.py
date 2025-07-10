@@ -44,7 +44,7 @@ def perform_grid_search():
         "num_trials": [1], # Set to 1 for grid search, as we aggregate across param combinations
         "render": [False], # Must be False for multiprocessing
         "rationality": [1.0],
-        "agent_utility_beta": [1.0],
+        "agent_utility_beta": [0.5, 1.0, 3.0],
         "sharpening_factor": [3.0],
         "observer_learning_rate": [0.5],
         "num_samples": [4096],
@@ -54,8 +54,8 @@ def perform_grid_search():
         "model_path": ["heuristic_agent.zip"],
         "max_steps": [20],
         "num_iterations": [3],
-        "agent_sampling_mode": ['uniform', 'belief_based', 'simple'],
-        "observer_sampling_mode": ['simple'],
+        "agent_sampling_mode": ['belief_based'],
+        "observer_sampling_mode": ['belief_based'],
         "randomize_agent_after_goal": [True],
         "randomize_target_after_goal": [True],
         "randomize_initial_placement": [True],

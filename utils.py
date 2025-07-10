@@ -201,8 +201,36 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state
         elif sampling_mode == 'uniform':
             is_wall_matrix = random_matrix < uniform_prob
         elif sampling_mode == 'deterministic':
-            # TODO
-            raise NotImplementedError("Deterministic sampling mode is not implemented yet.")
+            # Generate all possible 5x5 views from the ground-truth environment
+            possible_states = []
+            
+            # Create a version of the grid without the agent to generate clean views
+            pristine_grid = np.copy(env.grid)
+            agent_true_pos = np.where(pristine_grid == env._agent_cell)
+            if len(agent_true_pos[0]) > 0:
+                pristine_grid[agent_true_pos] = env._empty_cell
+
+            padded_pristine_grid = np.pad(pristine_grid, pad_width=view_radius, mode='constant', constant_values=env._wall_cell)
+
+            for r in range(env.grid_size):
+                for c in range(env.grid_size):
+                    # Any non-wall cell is a potential viewpoint
+                    if pristine_grid[r, c] != env._wall_cell:
+                        padded_r, padded_c = r + view_radius, c + view_radius
+                        local_view = padded_pristine_grid[
+                            padded_r - view_radius : padded_r + view_radius + 1,
+                            padded_c - view_radius : padded_c + view_radius + 1
+                        ].copy()
+
+                        # Place the agent in the center of the view, unless the target is there
+                        if local_view[view_radius, view_radius] != env._target_cell:
+                            local_view[view_radius, view_radius] = env._agent_cell
+                        
+                        possible_states.append(local_view)
+
+            # Remove duplicate states to get a unique set of possible views
+            unique_states_as_tuples = {tuple(map(tuple, state)) for state in possible_states}
+            possible_states = [np.array(state) for state in unique_states_as_tuples]
         else:
             raise ValueError(f"Unknown sampling mode: {sampling_mode}")
 

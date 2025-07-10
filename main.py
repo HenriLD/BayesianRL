@@ -180,7 +180,7 @@ if __name__ == '__main__':
         "model_path": "heuristic_agent.zip",
         "agent_type": "RSA",  # Can be "RSA" or "Base"
         "observer_type": "RSA", # Can be "RSA" or "Base"
-        "agent_sampling_mode": 'uniform',  # Sampling mode for agent's belief updates
+        "agent_sampling_mode": 'belief_based',  # Sampling mode for agent's belief updates
         
         # RSA-specific params (used by RSAAgent and RSAObserver)
         "rsa_iterations": 10,
@@ -192,12 +192,12 @@ if __name__ == '__main__':
         # Observer-specific params
         "observer_learning_rate": 0.5,
         "use_confidence": True,
-        "observer_sampling_mode": 'uniform',
+        "observer_sampling_mode": 'belief_based',
         
         # Simulation control
         "max_steps": 25,
         "num_iterations": 3, # Iterations within a single trial (e.g., agent respawns)
-        "num_trials": 5,    # Number of times to run the full simulation
+        "num_trials": 32,    # Number of times to run the full simulation
         "render": False,     # Disable rendering for multi-trial runs to speed it up
         "time_delay": 0.0,
         "num_samples": 4000,

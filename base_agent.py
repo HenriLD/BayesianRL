@@ -48,6 +48,7 @@ class BaseAgent:
             print(f"Error loading heuristic model for BaseAgent: {e}")
             self.heuristic_model = None
 
+
     def _get_action_with_anti_cycle(self, sorted_actions, agent_pos):
         """
         Selects the best action that avoids recently visited positions.

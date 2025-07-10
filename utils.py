@@ -130,9 +130,9 @@ def _calculate_heuristic_utilities(agent_pos, target_pos, states, env, heuristic
 
         
 
-def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state_view=None, sampling_mode = ['uniform'], uniform_prob=0.5, num_samples=NUM_STATE_SAMPLES):
+def _get_base_state_and_uncertain_cells(agent_pos, target_pos, belief_map, env):
     """
-    Generates possible 5x5 local states based on a belief map.
+    Creates a base 5x5 state and identifies cells with uncertain wall probabilities.
     """
     base_state = np.full((VIEW_SIZE, VIEW_SIZE), env._empty_cell)
     uncertain_cells = []
@@ -144,108 +144,152 @@ def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state
             c_global = agent_pos[1] + c_local - view_radius
             global_pos = (r_global, c_global)
 
-            if global_pos == agent_pos:
-                base_state[r_local, c_local] = env._agent_cell if agent_pos != target_pos else env._target_cell
+            # Handle agent and target positions
+            if global_pos == tuple(agent_pos):
+                base_state[r_local, c_local] = env._agent_cell if global_pos != tuple(target_pos) else env._target_cell
                 continue
-            if global_pos == target_pos:
+            if global_pos == tuple(target_pos):
                 base_state[r_local, c_local] = env._target_cell
                 continue
+            
+            # Handle out-of-bounds as walls
             if not (0 <= r_global < env.grid_size and 0 <= c_global < env.grid_size):
                 base_state[r_local, c_local] = env._wall_cell
+                continue
+
+            # Handle cells based on belief map
+            prob_wall = belief_map[r_global, c_global]
+            if prob_wall == 1.0:
+                base_state[r_local, c_local] = env._wall_cell
+            elif prob_wall == 0.0:
+                base_state[r_local, c_local] = env._empty_cell
             else:
-                prob_wall = belief_map[r_global, c_global]
-                if prob_wall == 1.0:
-                    base_state[r_local, c_local] = env._wall_cell
-                elif prob_wall == 0.0:
-                    base_state[r_local, c_local] = env._empty_cell
-                else:
-                    uncertain_cells.append(((r_local, c_local), prob_wall))
+                # This cell is uncertain
+                uncertain_cells.append(((r_local, c_local), prob_wall))
+    
+    return base_state, uncertain_cells
+
+def _sample_states_from_uncertainty(base_state, uncertain_cells, env, sampling_mode, uniform_prob, num_samples):
+    """
+    Generates states for 'uniform' or 'belief_based' sampling modes.
+    """
+    if not uncertain_cells:
+        return [base_state]
+
+    uncertain_coords, uncertain_probs = zip(*uncertain_cells)
+    uncertain_probs = np.array(uncertain_probs)
+    random_matrix = np.random.rand(num_samples, len(uncertain_cells))
+
+    if sampling_mode == 'belief_based':
+        is_wall_matrix = random_matrix < uncertain_probs
+    elif sampling_mode == 'uniform':
+        is_wall_matrix = random_matrix < uniform_prob
+    else:
+        # This function should not be called for other modes
+        return []
+
+    cell_values = np.where(is_wall_matrix, env._wall_cell, env._empty_cell)
+    
+    # Create a base set of states and fill in the uncertain cells
+    possible_states_np = np.tile(base_state, (num_samples, 1, 1))
+    rows, cols = zip(*uncertain_coords)
+    possible_states_np[:, rows, cols] = cell_values
+            
+    return [s for s in possible_states_np]
+
+def _generate_simple_states(base_state, env, num_samples):
+    """
+    Generates states for the 'simple' sampling mode using cardinal regions. 
+    """
+    if num_samples != 4 * (2**10):
+        raise ValueError(f"For 'simple' sampling mode, num_samples must be {4 * (2**10)}")
 
     possible_states = []
-    num_uncertain = len(uncertain_cells)
+    regions = {
+        'up': [(r, c) for r in range(2) for c in range(5)],
+        'down': [(r, c) for r in range(3, 5) for c in range(5)],
+        'left': [(r, c) for r in range(5) for c in range(2)],
+        'right': [(r, c) for r in range(5) for c in range(3, 5)]
+    }
+    wall_values = [env._wall_cell, env._empty_cell]
+
+    for region_cells in regions.values():
+        # Generate all 2^10 combinations for the current region
+        for combination in product(wall_values, repeat=10):
+            new_state = base_state.copy()
+            for i, cell_coord in enumerate(region_cells):
+                if combination[i] == env._wall_cell:
+                    new_state[cell_coord] = env._wall_cell
+            possible_states.append(new_state)
     
-    if num_uncertain == 0:
-        possible_states.append(base_state)
-    else: 
-        uncertain_coords, uncertain_probs = zip(*uncertain_cells)
-        uncertain_probs = np.array(uncertain_probs)        
-        random_matrix = np.random.rand(num_samples, num_uncertain)
+    return possible_states
 
-        if sampling_mode == 'simple':
-            if num_samples != 4 * (2**10):
-                raise ValueError(f"For 'simple' sampling mode, num_samples must be {4 * (2**10)}")
-        
-            # Define the four 10-cell cardinal regions
-            regions = {
-                'up': [(r, c) for r in range(2) for c in range(5)],
-                'down': [(r, c) for r in range(3, 5) for c in range(5)],
-                'left': [(r, c) for r in range(5) for c in range(2)],
-                'right': [(r, c) for r in range(5) for c in range(3, 5)]
-            }
-            
-            wall_values = [env._wall_cell, env._empty_cell]
+def _generate_deterministic_states(env):
+    """
+    Generates all possible 5x5 views from the ground-truth environment grid.
+    """
+    possible_states = []
+    view_radius = VIEW_SIZE // 2
+    
+    # Create a grid copy without the agent for clean state generation
+    pristine_grid = np.copy(env.grid)
+    agent_pos_in_grid = np.where(pristine_grid == env._agent_cell)
+    if agent_pos_in_grid[0].size > 0:
+        pristine_grid[agent_pos_in_grid] = env._empty_cell
 
-            for region_cells in regions.values():
-                # Generate all 2^10 combinations for the current region
-                for combination in product(wall_values, repeat=10):
-                    new_state = base_state.copy()
-                    # Place walls according to the combination
-                    for i, cell_coord in enumerate(region_cells):
-                        # Only place walls, assume rest is empty as per base_state
-                        if combination[i] == env._wall_cell:
-                            new_state[cell_coord] = env._wall_cell
-                    possible_states.append(new_state)
-            
-        elif sampling_mode == 'belief_based':
-            is_wall_matrix = random_matrix < uncertain_probs
-        elif sampling_mode == 'uniform':
-            is_wall_matrix = random_matrix < uniform_prob
+    padded_grid = np.pad(pristine_grid, pad_width=view_radius, mode='constant', constant_values=env._wall_cell)
+
+    # Iterate through every non-wall cell to generate a potential view
+    for r in range(env.grid_size):
+        for c in range(env.grid_size):
+            if pristine_grid[r, c] != env._wall_cell:
+                padded_r, padded_c = r + view_radius, c + view_radius
+                
+                # Extract the 5x5 local view
+                local_view = padded_grid[
+                    padded_r - view_radius : padded_r + view_radius + 1,
+                    padded_c - view_radius : padded_c + view_radius + 1
+                ].copy()
+
+                # Place the agent in the center, unless the target is already there
+                if local_view[view_radius, view_radius] != env._target_cell:
+                    local_view[view_radius, view_radius] = env._agent_cell
+                
+                possible_states.append(local_view)
+
+    # Remove duplicates to get a unique set of states
+    unique_states_tuples = {tuple(map(tuple, state)) for state in possible_states}
+    unique_states = [np.array(state) for state in unique_states_tuples]
+    
+    return unique_states
+
+def _generate_possible_states(agent_pos, target_pos, belief_map, env, true_state_view=None, sampling_mode='uniform', uniform_prob=0.5, num_samples=NUM_STATE_SAMPLES):
+    """
+    Generates possible 5x5 local states based on a belief map and a sampling mode.
+    """
+    possible_states = []
+
+    if sampling_mode == 'deterministic':
+        possible_states = _generate_deterministic_states(env)
+    else:
+        # Most modes start by identifying a base state and uncertain cells
+        base_state, uncertain_cells = _get_base_state_and_uncertain_cells(agent_pos, target_pos, belief_map, env)
+
+        if not uncertain_cells and sampling_mode in ['uniform', 'belief_based']:
+            possible_states = [base_state]
+        elif sampling_mode in ['uniform', 'belief_based']:
+            possible_states = _sample_states_from_uncertainty(base_state, uncertain_cells, env, sampling_mode, uniform_prob, num_samples)
+        elif sampling_mode == 'simple':
+            possible_states = _generate_simple_states(base_state, env, num_samples)
         elif sampling_mode == 'deterministic':
-            # Generate all possible 5x5 views from the ground-truth environment
-            possible_states = []
-            
-            # Create a version of the grid without the agent to generate clean views
-            pristine_grid = np.copy(env.grid)
-            agent_true_pos = np.where(pristine_grid == env._agent_cell)
-            if len(agent_true_pos[0]) > 0:
-                pristine_grid[agent_true_pos] = env._empty_cell
-
-            padded_pristine_grid = np.pad(pristine_grid, pad_width=view_radius, mode='constant', constant_values=env._wall_cell)
-
-            for r in range(env.grid_size):
-                for c in range(env.grid_size):
-                    # Any non-wall cell is a potential viewpoint
-                    if pristine_grid[r, c] != env._wall_cell:
-                        padded_r, padded_c = r + view_radius, c + view_radius
-                        local_view = padded_pristine_grid[
-                            padded_r - view_radius : padded_r + view_radius + 1,
-                            padded_c - view_radius : padded_c + view_radius + 1
-                        ].copy()
-
-                        # Place the agent in the center of the view, unless the target is there
-                        if local_view[view_radius, view_radius] != env._target_cell:
-                            local_view[view_radius, view_radius] = env._agent_cell
-                        
-                        possible_states.append(local_view)
-
-            # Remove duplicate states to get a unique set of possible views
-            unique_states_as_tuples = {tuple(map(tuple, state)) for state in possible_states}
-            possible_states = [np.array(state) for state in unique_states_as_tuples]
+             raise NotImplementedError("Deterministic sampling mode is not implemented yet.")
         else:
             raise ValueError(f"Unknown sampling mode: {sampling_mode}")
 
-        if sampling_mode != 'simple':        
-            cell_values = np.where(is_wall_matrix, env._wall_cell, env._empty_cell)
-            
-            possible_states_np = np.tile(base_state, (num_samples, 1, 1))
-            rows, cols = zip(*uncertain_coords)
-            possible_states_np[:, rows, cols] = cell_values
-                
-            possible_states = [s for s in possible_states_np]
-
-
+    # Ensure the agent's true view is always included in the set of possibilities
     if true_state_view is not None:
-        if not any(np.array_equal(s, true_state_view) for s in possible_states):
+        is_present = any(np.array_equal(s, true_state_view) for s in possible_states)
+        if not is_present:
             possible_states.append(true_state_view)
 
     return possible_states

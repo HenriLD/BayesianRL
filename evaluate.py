@@ -44,10 +44,10 @@ def perform_grid_search():
         "num_trials": [1], # Set to 1 for grid search, as we aggregate across param combinations
         "render": [False], # Must be False for multiprocessing
         "rationality": [1.0],
-        "agent_utility_beta": [0.9, 1.0, 1.2, 1.5, 1.8, 2.0],
+        "agent_utility_beta": [1.0],
         "sharpening_factor": [3.0],
-        "observer_learning_rate": [0.5],
-        "num_samples": [2000],
+        "observer_learning_rate": [0.2, 0.5, 0.9, 1.0, 1.5, 2.0, 5.0],
+        "num_samples": [20000],
         "convergence_threshold": [0.01],
         "use_confidence": [True],
         "max_cycle": [4],

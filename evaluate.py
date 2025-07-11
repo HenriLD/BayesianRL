@@ -47,7 +47,7 @@ def perform_grid_search():
         "agent_utility_beta": [1.0],
         "sharpening_factor": [0.5],
         "observer_learning_rate": [0.5],
-        "num_samples": [1000, 5000],
+        "num_samples": [100],
         "convergence_threshold": [0.00001],
         "rsa_iterations": [10000],
         "use_confidence": [True],
@@ -86,7 +86,7 @@ def perform_grid_search():
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
     
     # Define how many times to run each unique parameter combination
-    runs_per_combination = 32 
+    runs_per_combination = 5
     all_runs_params = [params for params in param_combinations for _ in range(runs_per_combination)]
     total_simulations = len(all_runs_params)
 

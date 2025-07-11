@@ -10,11 +10,11 @@ from scipy.spatial.distance import jensenshannon
 # This assumes a directory structure where main.py is in the root,
 # and the other modules are in their respective subdirectories.
 from env import GridEnvironment
-from base_agent import BaseAgent
-from rsa_agent import RSAAgent
-from base_observer import BaseObserver
-from rsa_observer import RSAObserver
-from utils import render_side_by_side_views, _render_belief_map_with_chars
+from Agents.base_agent import BaseAgent
+from Agents.rsa_agent import RSAAgent
+from Agents.base_observer import BaseObserver
+from Agents.rsa_observer import RSAObserver
+from utils.utils import render_side_by_side_views, _render_belief_map_with_chars
 
 def setup_environment(params):
     """Creates and configures the grid environment."""

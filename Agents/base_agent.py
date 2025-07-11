@@ -3,7 +3,7 @@ import torch
 from collections import deque
 from stable_baselines3 import PPO
 from env import GridEnvironment
-from utils import _render_belief_map_with_chars
+from utils.utils import _render_belief_map_with_chars
 
 class BaseAgent:
     """

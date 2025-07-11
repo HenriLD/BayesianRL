@@ -1,5 +1,5 @@
 import numpy as np
-from base_observer import BaseObserver
+from Agents.base_observer import BaseObserver
 
 class RSAObserver(BaseObserver):
     """

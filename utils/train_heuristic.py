@@ -1,7 +1,8 @@
 import os
 import random
 import gymnasium as gym
-from stable_baselines3 import PPO
+from stable_baselines3 import SAC
+import torch
 from stable_baselines3.common.env_checker import check_env
 
 # Attempt to import the custom environment
@@ -159,13 +160,33 @@ def train_agent(training_steps: int = 100_000, save_path: str = "heuristic_agent
         print(f"Environment check failed: {e}")
         return
 
-    print("Initializing PPO model...")
+    # ** Check for GPU availability (CUDA for NVIDIA, ROCm for AMD) **
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available():
+        #This part of the code is not reachable
+        device = "rocm"
+    else:
+        device = "cpu"
+    print(f"Using device: {device}")
+
+
+    print("Initializing SAC model...")
     # 'MultiInputPolicy' is used because our environment's observation space is a dictionary.
-    model = PPO(
+    # SAC is an off-policy Maximum Entropy RL algorithm.
+    model = SAC(
         'MultiInputPolicy',
         env,
-        verbose=1,  # Set to 1 to print training progress
-        tensorboard_log="./ppo_grid_tensorboard/"
+        verbose=1,
+        tensorboard_log="./sac_grid_tensorboard/",
+        buffer_size=100_000,
+        batch_size=256,
+        learning_starts=1000,
+        gamma=0.99,
+        tau=0.005,
+        learning_rate=0.0003,
+        ent_coef='auto',
+        device=device  # ** Set the device for training **
     )
 
     print(f"Starting training for {training_steps} steps...")
@@ -188,12 +209,6 @@ if __name__ == '__main__':
     TOTAL_TRAINING_STEPS = 1_500_000
     
     # Define the name for the saved model file.
-    MODEL_SAVE_PATH = "heuristic_agent.zip"
+    MODEL_SAVE_PATH = "heuristic_agent_sac.zip"
 
     train_agent(training_steps=TOTAL_TRAINING_STEPS, save_path=MODEL_SAVE_PATH)
-
-    print("\n--- How to use the trained model ---")
-    print("1. Keep the saved file ('heuristic_agent.zip') in your project directory.")
-    print("2. In 'rsa_agent.py', you will load this model to get heuristic values.")
-    print("   The value function of this trained agent can predict the expected future reward")
-    print("   from any given state, making it a powerful heuristic for your RSA agent.")

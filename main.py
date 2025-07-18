@@ -9,7 +9,7 @@ from scipy.spatial.distance import jensenshannon
 # Import environment, agents, observers, and utilities
 # This assumes a directory structure where main.py is in the root,
 # and the other modules are in their respective subdirectories.
-from env import GridEnvironment
+from utils.env import GridEnvironment
 from Agents.base_agent import BaseAgent
 from Agents.rsa_agent import RSAAgent
 from Agents.base_observer import BaseObserver

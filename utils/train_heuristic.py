@@ -4,14 +4,8 @@ import gymnasium as gym
 from stable_baselines3 import SAC
 import torch
 from stable_baselines3.common.env_checker import check_env
+from env import GridEnvironment
 
-# Attempt to import the custom environment
-try:
-    from env import GridEnvironment
-except ImportError:
-    print("Error: Could not import GridEnvironment.")
-    print("Please ensure 'env.py' is in the same directory.")
-    exit()
 
 # --- Predefined Maps for Training ---
 # Define a set of fixed map layouts. The agent 'A' and target 'T' will be

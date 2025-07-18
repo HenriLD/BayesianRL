@@ -1,7 +1,7 @@
 import numpy as np
 import random
 from scipy.stats import entropy
-from env import GridEnvironment
+from utils.env import GridEnvironment
 from stable_baselines3 import PPO
 from utils.utils import (
     _render_belief_map_with_chars,

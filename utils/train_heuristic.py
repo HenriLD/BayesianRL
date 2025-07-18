@@ -1,7 +1,7 @@
 import os
 import random
 import gymnasium as gym
-from stable_baselines3 import SAC
+from stable_baselines3 import PPO
 import torch
 from stable_baselines3.common.env_checker import check_env
 from env import GridEnvironment
@@ -158,30 +158,22 @@ def train_agent(training_steps: int = 100_000, save_path: str = "heuristic_agent
     if torch.cuda.is_available():
         device = "cuda"
     elif hasattr(torch.version, 'hip') and torch.version.hip and torch.cuda.is_available():
-        #This part of the code is not reachable
         device = "rocm"
     else:
         device = "cpu"
     print(f"Using device: {device}")
 
-
-    print("Initializing SAC model...")
+    print("Initializing PPO model...")
     # 'MultiInputPolicy' is used because our environment's observation space is a dictionary.
     # SAC is an off-policy Maximum Entropy RL algorithm.
-    model = SAC(
+    model = PPO(
         'MultiInputPolicy',
         env,
-        verbose=1,
-        tensorboard_log="./sac_grid_tensorboard/",
-        buffer_size=100_000,
-        batch_size=256,
-        learning_starts=1000,
-        gamma=0.99,
-        tau=0.005,
-        learning_rate=0.0003,
-        ent_coef='auto',
-        device=device  # ** Set the device for training **
+        verbose=1,  # Set to 1 to print training progress
+        tensorboard_log="./ppo_grid_tensorboard/",
+        ent_coef= 0.01
     )
+
 
     print(f"Starting training for {training_steps} steps...")
     model.learn(total_timesteps=training_steps)

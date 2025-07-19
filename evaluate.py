@@ -45,14 +45,14 @@ def perform_grid_search():
         "render": [False], # Must be False for multiprocessing
         "rationality": [1.0],
         "agent_utility_beta": [1.0],
-        "sharpening_factor": [0.5],
+        "sharpening_factor": [1],
         "observer_learning_rate": [0.5],
-        "num_samples": [100],
+        "num_samples": [4000],
         "convergence_threshold": [0.00001],
         "rsa_iterations": [10000],
         "use_confidence": [True],
         "max_cycle": [4],
-        "model_path": ["heuristic_agent.zip"],
+        "model_path": ["heuristic_agent.zip", "heuristic_agent_ent_001.zip"],
         "max_steps": [20],
         "num_iterations": [3],
         "agent_sampling_mode": ['belief_based'],
@@ -86,7 +86,7 @@ def perform_grid_search():
     param_combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
     
     # Define how many times to run each unique parameter combination
-    runs_per_combination = 5
+    runs_per_combination = 100
     all_runs_params = [params for params in param_combinations for _ in range(runs_per_combination)]
     total_simulations = len(all_runs_params)
 
